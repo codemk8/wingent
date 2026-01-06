@@ -1,21 +1,17 @@
 #!/usr/bin/env python3
 """
-Simplified canvas test - Debug version to verify painting works.
+Simplified canvas test - Tkinter version.
 """
 
-import sys
+import tkinter as tk
 import math
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout
-from PyQt5.QtCore import Qt, QRect, QPoint
-from PyQt5.QtGui import QPainter, QPen, QColor, QFont, QBrush
 
-class SimpleCanvasWidget(QWidget):
+
+class SimpleCanvasWidget(tk.Canvas):
     """Simple canvas for testing."""
 
-    def __init__(self):
-        super().__init__()
-        self.setMinimumSize(800, 600)
-        self.setStyleSheet("background-color: #ffffff;")
+    def __init__(self, parent):
+        super().__init__(parent, width=800, height=600, bg="#f0f0f0")
 
         # Simple node positions
         self.nodes = [
@@ -30,50 +26,43 @@ class SimpleCanvasWidget(QWidget):
             ("node2", "node3"),
         ]
 
+        # Drag state
+        self.dragging_node = None
+        self.drag_offset_x = 0
+        self.drag_offset_y = 0
+
+        # Bind mouse events
+        self.bind("<ButtonPress-1>", self.on_mouse_press)
+        self.bind("<B1-Motion>", self.on_mouse_drag)
+        self.bind("<ButtonRelease-1>", self.on_mouse_release)
+
         print("Canvas initialized - ready to paint")
+        self.draw_canvas()
 
-    def paintEvent(self, event):
-        """Paint the canvas."""
-        print("paintEvent called")
+    def draw_canvas(self):
+        """Draw the canvas elements."""
+        print("Drawing canvas")
 
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        # Draw background
-        painter.fillRect(self.rect(), QColor("#f0f0f0"))
-
-        # Draw arrows
+        # Draw arrows first (so they appear behind nodes)
         print(f"Drawing {len(self.links)} links")
         for source_id, target_id in self.links:
             source_node = next(n for n in self.nodes if n["id"] == source_id)
             target_node = next(n for n in self.nodes if n["id"] == target_id)
 
-            # Draw arrow line
+            # Calculate arrow line positions (center of nodes)
             x1 = source_node["x"] + 75
             y1 = source_node["y"] + 30
             x2 = target_node["x"] + 75
             y2 = target_node["y"] + 30
 
-            pen = QPen(QColor("#1976D2"), 2)
-            painter.setPen(pen)
-            painter.drawLine(x1, y1, x2, y2)
-
-            # Draw arrowhead
-            angle = math.atan2(y2 - y1, x2 - x1)
-            arrow_size = 15
-
-            p1_x = x2 - arrow_size * math.cos(angle - math.pi / 6)
-            p1_y = y2 - arrow_size * math.sin(angle - math.pi / 6)
-
-            p2_x = x2 - arrow_size * math.cos(angle + math.pi / 6)
-            p2_y = y2 - arrow_size * math.sin(angle + math.pi / 6)
-
-            painter.setBrush(QBrush(QColor("#1976D2")))
-            painter.drawPolygon([
-                QPoint(int(x2), int(y2)),
-                QPoint(int(p1_x), int(p1_y)),
-                QPoint(int(p2_x), int(p2_y))
-            ])
+            # Draw arrow line with arrowhead
+            self.create_line(
+                x1, y1, x2, y2,
+                arrow=tk.LAST,
+                fill="#1976D2",
+                width=2,
+                arrowshape=(15, 20, 6)
+            )
 
         # Draw nodes
         print(f"Drawing {len(self.nodes)} nodes")
@@ -83,51 +72,89 @@ class SimpleCanvasWidget(QWidget):
             w = 150
             h = 60
 
-            # Node background
-            painter.fillRect(x, y, w, h, QColor("#2196F3"))
-
-            # Node border
-            painter.setPen(QPen(QColor("#000000"), 2))
-            painter.drawRect(x, y, w, h)
+            # Node rectangle with fill and border
+            self.create_rectangle(
+                x, y, x + w, y + h,
+                fill="#2196F3",
+                outline="#000000",
+                width=2
+            )
 
             # Node text
-            painter.setPen(QPen(QColor("#FFFFFF")))
-            painter.setFont(QFont("Arial", 10, QFont.Bold))
-            painter.drawText(x + 5, y + 20, w - 10, h - 10,
-                           Qt.AlignCenter, node["name"])
+            self.create_text(
+                x + w/2, y + h/2,
+                text=node["name"],
+                fill="#FFFFFF",
+                font=("Arial", 10, "bold")
+            )
 
-        print("paintEvent completed")
+        print("Canvas drawing completed")
 
-class SimpleCanvasApp(QMainWindow):
+    def find_node_at_position(self, x, y):
+        """Find which node (if any) is at the given position."""
+        for node in self.nodes:
+            node_x = node["x"]
+            node_y = node["y"]
+            w = 150
+            h = 60
+
+            if node_x <= x <= node_x + w and node_y <= y <= node_y + h:
+                return node
+        return None
+
+    def on_mouse_press(self, event):
+        """Handle mouse button press - start dragging if on a node."""
+        node = self.find_node_at_position(event.x, event.y)
+        if node:
+            self.dragging_node = node
+            self.drag_offset_x = event.x - node["x"]
+            self.drag_offset_y = event.y - node["y"]
+            self.config(cursor="fleur")  # Change cursor to indicate dragging
+            print(f"Started dragging {node['name']}")
+
+    def on_mouse_drag(self, event):
+        """Handle mouse drag - move the node."""
+        if self.dragging_node:
+            # Update node position
+            self.dragging_node["x"] = event.x - self.drag_offset_x
+            self.dragging_node["y"] = event.y - self.drag_offset_y
+
+            # Redraw everything
+            self.delete("all")
+            self.draw_canvas()
+
+    def on_mouse_release(self, event):
+        """Handle mouse button release - stop dragging."""
+        if self.dragging_node:
+            print(f"Stopped dragging {self.dragging_node['name']}")
+            self.dragging_node = None
+            self.config(cursor="")  # Reset cursor
+
+
+class SimpleCanvasApp:
     """Simple test application."""
 
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Simple Canvas Test")
-        self.setGeometry(100, 100, 900, 700)
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Simple Canvas Test")
+        self.root.geometry("900x700")
 
         # Create canvas
-        self.canvas = SimpleCanvasWidget()
-
-        # Main layout
-        layout = QVBoxLayout()
-        layout.addWidget(self.canvas)
-
-        central_widget = QWidget()
-        central_widget.setLayout(layout)
-        self.setCentralWidget(central_widget)
+        self.canvas = SimpleCanvasWidget(self.root)
+        self.canvas.pack(expand=True, fill=tk.BOTH, padx=20, pady=20)
 
         print("Application window created")
 
+
 def main():
     print("Starting Simple Canvas Test")
-    app = QApplication(sys.argv)
 
-    window = SimpleCanvasApp()
-    window.show()
+    root = tk.Tk()
+    app = SimpleCanvasApp(root)
+
     print("Window shown - you should see a canvas with 3 boxes and 2 arrows")
+    root.mainloop()
 
-    sys.exit(app.exec_())
 
 if __name__ == "__main__":
     main()
