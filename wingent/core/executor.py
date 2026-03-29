@@ -1,318 +1,347 @@
 """
-Execution engine for running workflows.
+Task executor — drives hierarchical agent execution.
 """
 
+from typing import Dict, Any, Optional, List, Callable
 import asyncio
-from typing import Dict, List, Optional, Callable
-from ..app.workflow import WorkflowGraph
-from .agent import Agent
-from .message import Message, MessageChannel
+import uuid
+
+from .task import Task, TaskStatus, TaskTree
+from .bulletin import BulletinBoard, BulletinPost, PostType
+from .tool import Tool, ToolRegistry
+from .agent import Agent, AgentConfig, AgentContext, AgentRole
+from .tools.meta import SpawnSubtaskTool, CompleteTaskTool, PostToBulletinTool, ReadBulletinTool
 
 
-class ExecutionEngine:
-    """Manages workflow execution."""
+class TaskExecutor:
+    """Drives the execution of a hierarchical task tree.
 
-    def __init__(self, workflow: WorkflowGraph, provider_factory: Optional[Callable] = None):
-        """
-        Initialize execution engine.
+    Usage:
+        executor = TaskExecutor(provider_factory=my_factory)
+        task = await executor.submit("Write a report", "A 2000-word report")
+        await executor.wait_for_completion(task, timeout=300)
+        print(task.result)
+    """
 
-        Args:
-            workflow: WorkflowGraph to execute
-            provider_factory: Optional factory function to create providers
-                             Signature: (provider_name: str, model: str) -> LLMProvider
-        """
-        self.workflow = workflow
+    def __init__(
+        self,
+        provider_factory: Callable,
+        default_agent_config: Optional[AgentConfig] = None,
+        tool_factories: Optional[Dict[str, Callable[[], Tool]]] = None,
+        max_depth: int = 3,
+        max_agents: int = 10,
+        max_turns_per_agent: int = 20,
+    ):
         self.provider_factory = provider_factory
+        self.default_agent_config = default_agent_config
+        self.tool_factories = tool_factories or {}
+        self.max_depth = max_depth
+        self.max_agents = max_agents
+        self.max_turns_per_agent = max_turns_per_agent
+
+        self.task_tree = TaskTree()
+        self.boards: Dict[str, BulletinBoard] = {}
         self.agents: Dict[str, Agent] = {}
-        self.channels: Dict[tuple, MessageChannel] = {}
-        self.agent_inboxes: Dict[str, asyncio.Queue] = {}  # Direct inbox for each agent
-        self.running = False
-        self._tasks: List[asyncio.Task] = []
-        self._message_log: List[Message] = []
-        self._message_callbacks: List[Callable[[Message], None]] = []
+        self._running_tasks: Dict[str, asyncio.Task] = {}
+        self._callbacks: List[Callable] = []
+        self._agent_count = 0
 
-    async def initialize(self):
-        """Initialize agents and channels from workflow."""
-        print(f"Initializing execution engine with {len(self.workflow.nodes)} agents...")
+    def add_callback(self, callback: Callable) -> None:
+        self._callbacks.append(callback)
 
-        # Create agent instances
-        for node_id, node in self.workflow.nodes.items():
-            config = node.agent_config
-
-            # Create provider
-            if self.provider_factory:
-                provider = self.provider_factory(config.provider, config.model)
-            else:
-                provider = self._default_provider_factory(config.provider, config.model)
-
-            # Create agent
-            self.agents[node_id] = Agent(config, provider)
-
-            # Create inbox for direct messages
-            self.agent_inboxes[node_id] = asyncio.Queue()
-
-            print(f"  Created agent: {config.name} ({config.id})")
-
-        # Create message channels
-        for edge in self.workflow.edges:
-            channel_key = (edge.source_id, edge.target_id)
-            self.channels[channel_key] = MessageChannel(
-                edge.source_id,
-                edge.target_id
-            )
-            print(f"  Created channel: {edge.source_id} -> {edge.target_id}")
-
-        print(f"Initialization complete: {len(self.agents)} agents, {len(self.channels)} channels")
-
-    def _default_provider_factory(self, provider_name: str, model: str):
-        """
-        Default provider factory.
-
-        Args:
-            provider_name: Provider name ("anthropic", "openai", "local")
-            model: Model name
-
-        Returns:
-            Provider instance
-        """
-        if provider_name == "anthropic":
-            from ..providers.anthropic import AnthropicProvider
-            return AnthropicProvider()
-        elif provider_name == "openai":
-            from ..providers.openai import OpenAIProvider
-            return OpenAIProvider()
-        elif provider_name == "local":
-            from ..providers.local import LocalProvider
-            return LocalProvider()
-        else:
-            raise ValueError(f"Unknown provider: {provider_name}")
-
-    async def start(self, initial_messages: Optional[List[Message]] = None):
-        """
-        Start workflow execution.
-
-        Args:
-            initial_messages: Optional list of initial messages to seed the workflow
-        """
-        if self.running:
-            raise RuntimeError("Execution engine is already running")
-
-        print("\n=== Starting workflow execution ===")
-        self.running = True
-
-        # Send initial messages if provided
-        if initial_messages:
-            print(f"Sending {len(initial_messages)} initial messages...")
-            for message in initial_messages:
-                await self._route_message(message)
-                self._log_message(message)
-
-        # Start agent processing loops
-        print(f"Starting {len(self.agents)} agent loops...")
-        self._tasks = [
-            asyncio.create_task(self._agent_loop(agent_id, agent))
-            for agent_id, agent in self.agents.items()
-        ]
-
-        # Wait for all tasks (or until stopped)
-        try:
-            await asyncio.gather(*self._tasks)
-        except asyncio.CancelledError:
-            print("Execution cancelled")
-
-    async def _agent_loop(self, agent_id: str, agent: Agent):
-        """
-        Main processing loop for an agent.
-
-        Args:
-            agent_id: Agent ID
-            agent: Agent instance
-        """
-        print(f"[{agent.config.name}] Agent loop started")
-
-        while self.running:
-            message_received = False
-            message = None
-
-            # First check inbox for direct messages
-            inbox = self.agent_inboxes[agent_id]
+    def _notify(self, event: str, data: Dict[str, Any]) -> None:
+        for cb in self._callbacks:
             try:
-                message = inbox.get_nowait()
-                message_received = True
-                print(f"[{agent.config.name}] Received message from inbox (sender: {message.sender_id})")
-            except asyncio.QueueEmpty:
+                cb(event, data)
+            except Exception:
                 pass
 
-            # If no inbox message, check incoming channels
-            if not message_received:
-                incoming_channels = [
-                    channel for (src, tgt), channel in self.channels.items()
-                    if tgt == agent_id
-                ]
+    async def submit(
+        self,
+        goal: str,
+        completion_criteria: str,
+        agent_config: Optional[AgentConfig] = None,
+    ) -> Task:
+        """Create a root task and assign an agent to work on it."""
+        task = Task(goal=goal, completion_criteria=completion_criteria)
+        self.task_tree.add_task(task)
 
-                for channel in incoming_channels:
-                    try:
-                        # Try to receive message with short timeout
-                        message = await channel.receive(timeout=0.1)
+        config = agent_config or self.default_agent_config
+        if not config:
+            raise ValueError("No agent config provided and no default set")
 
-                        if message:
-                            message_received = True
-                            print(f"[{agent.config.name}] Received message from {message.sender_id}")
-                            break
+        agent = self._create_agent(config)
+        task.assigned_agent_id = agent.config.id
+        task.status = TaskStatus.IN_PROGRESS
 
-                    except Exception as e:
-                        # Channel error or timeout
-                        if not isinstance(e, asyncio.TimeoutError):
-                            print(f"[{agent.config.name}] Channel error: {e}")
+        self._notify("task_started", {"task_id": task.id, "agent_id": agent.config.id})
 
-            # Process message if received
-            if message_received and message:
-                try:
-                    response = await agent.process_message(message)
-                    print(f"[{agent.config.name}] Generated response")
+        self._running_tasks[task.id] = asyncio.create_task(
+            self._run_agent_on_task(agent, task)
+        )
+        return task
 
-                    # Log response
-                    self._log_message(response)
+    async def _run_agent_on_task(self, agent: Agent, task: Task) -> None:
+        """Core loop: run agent turns until the task is terminal."""
+        agent.current_task_id = task.id
 
-                    # Route response to ALL outgoing channels for this agent
-                    outgoing_channels = [
-                        (channel, tgt) for (src, tgt), channel in self.channels.items()
-                        if src == agent_id
-                    ]
+        # Determine which bulletin board this agent can see:
+        # If this is a subtask, it can see the parent's board
+        parent_board = None
+        if task.parent_task_id:
+            parent_board = self.boards.get(task.parent_task_id)
 
-                    if outgoing_channels:
-                        for channel, target_id in outgoing_channels:
-                            # Create message for this specific target
-                            outgoing_msg = Message(
-                                id=str(__import__('uuid').uuid4()),
-                                sender_id=agent_id,
-                                recipient_id=target_id,
-                                content=response.content,
-                                timestamp=response.timestamp,
-                                metadata=response.metadata,
-                                parent_id=response.id
-                            )
-                            await self._route_message(outgoing_msg)
-                    else:
-                        # No outgoing channels, just log the response
-                        print(f"[{agent.config.name}] No outgoing channels, response not forwarded")
+        context = AgentContext(
+            task=task,
+            bulletin_board=parent_board,
+            task_tree=self.task_tree,
+            agent_spawner=self._spawn_agent_for_subtask,
+        )
 
-                except Exception as e:
-                    print(f"[{agent.config.name}] Error processing message: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-            # If no messages received, wait a bit before checking again
-            if not message_received:
-                await asyncio.sleep(0.1)
-
-        print(f"[{agent.config.name}] Agent loop stopped")
-
-    async def _route_message(self, message: Message):
-        """
-        Route message to appropriate channel(s).
-
-        Args:
-            message: Message to route
-        """
-        routed = False
-
-        # Find channels that match this message's sender and recipient
-        for (src, tgt), channel in self.channels.items():
-            if src == message.sender_id and tgt == message.recipient_id:
-                try:
-                    await channel.send(message)
-                    print(f"  Routed message: {message.sender_id} -> {message.recipient_id}")
-                    routed = True
-                except Exception as e:
-                    print(f"  Failed to route message: {e}")
-
-        # If no channel found, try to deliver to agent inbox (for initial/external messages)
-        if not routed and message.recipient_id in self.agent_inboxes:
+        turns = 0
+        while not task.is_terminal() and turns < self.max_turns_per_agent:
             try:
-                await self.agent_inboxes[message.recipient_id].put(message)
-                print(f"  Routed message to inbox: {message.sender_id} -> {message.recipient_id}")
-                routed = True
+                turn_result = await agent.run_turn(context)
+                turns += 1
+
+                self._notify("turn_completed", {
+                    "task_id": task.id,
+                    "agent_id": agent.config.id,
+                    "turn": turns,
+                    "tool_calls": turn_result.tool_calls_made,
+                    "content_preview": turn_result.content[:200] if turn_result.content else "",
+                })
+
+                # If task was decomposed, switch to manager mode
+                if task.status == TaskStatus.DECOMPOSED:
+                    await self._manager_loop(agent, task)
+                    return
+
             except Exception as e:
-                print(f"  Failed to route to inbox: {e}")
+                task.fail(f"Agent error: {e}")
+                self._notify("task_failed", {"task_id": task.id, "error": str(e)})
+                return
 
-        if not routed:
-            print(f"  Warning: Could not route message {message.sender_id} -> {message.recipient_id}")
+        if not task.is_terminal():
+            task.fail(f"Max turns ({self.max_turns_per_agent}) exceeded")
+            self._notify("task_failed", {
+                "task_id": task.id,
+                "error": "max turns exceeded",
+            })
 
-    def _log_message(self, message: Message):
-        """
-        Log message and notify callbacks.
+    async def _manager_loop(self, manager: Agent, task: Task) -> None:
+        """Monitor bulletin board and synthesize when all subtasks complete."""
+        manager.role = AgentRole.MANAGER
+        board = self.boards[task.id]
+        board.subscribe(manager.config.id)
 
-        Args:
-            message: Message to log
-        """
-        self._message_log.append(message)
+        self._notify("manager_started", {
+            "task_id": task.id,
+            "agent_id": manager.config.id,
+        })
 
-        # Notify callbacks
-        for callback in self._message_callbacks:
+        turns = 0
+        while not task.is_terminal() and turns < self.max_turns_per_agent:
+            # Wait for activity
+            post = await board.wait_for_post(manager.config.id, timeout=5.0)
+
+            if self.task_tree.all_subtasks_complete(task.id):
+                # All done — let manager synthesize
+                manager.add_context_message(
+                    "All subtasks are now complete. Review the results and "
+                    "call complete_task with the synthesized final result."
+                )
+                context = AgentContext(
+                    task=task,
+                    bulletin_board=board,
+                    task_tree=self.task_tree,
+                    agent_spawner=self._spawn_agent_for_subtask,
+                )
+                await manager.run_turn(context)
+                turns += 1
+
+                if task.is_terminal():
+                    self._notify("task_completed", {
+                        "task_id": task.id,
+                        "result_preview": (task.result or "")[:200],
+                    })
+                    return
+            elif post:
+                # React to posts if needed (e.g., failures, questions)
+                if post.post_type == PostType.RESULT:
+                    # A subtask finished — check if all done on next iteration
+                    continue
+                elif post.post_type in (PostType.QUESTION, PostType.STATUS_UPDATE):
+                    manager.add_context_message(
+                        f"Bulletin board update from {post.author_id[:12]}: "
+                        f"[{post.post_type.value}] {post.content[:500]}"
+                    )
+                    context = AgentContext(
+                        task=task,
+                        bulletin_board=board,
+                        task_tree=self.task_tree,
+                        agent_spawner=self._spawn_agent_for_subtask,
+                    )
+                    await manager.run_turn(context)
+                    turns += 1
+
+        if not task.is_terminal():
+            task.fail("Manager max turns exceeded")
+
+    async def _spawn_agent_for_subtask(
+        self,
+        parent_task: Task,
+        subtask_goal: str,
+        subtask_criteria: str,
+        agent_config: Optional[AgentConfig] = None,
+    ) -> Task:
+        """Create a subtask, bulletin board, and agent. Start the agent."""
+        # Check limits
+        depth = self.task_tree.get_depth(parent_task.id)
+        if depth >= self.max_depth:
+            raise RuntimeError(
+                f"Max decomposition depth ({self.max_depth}) reached. "
+                "Complete the task directly instead of spawning more subtasks."
+            )
+        if self._agent_count >= self.max_agents:
+            raise RuntimeError(
+                f"Max agent limit ({self.max_agents}) reached. "
+                "Complete existing tasks before spawning new agents."
+            )
+
+        # Create subtask
+        subtask = Task(
+            goal=subtask_goal,
+            completion_criteria=subtask_criteria,
+            parent_task_id=parent_task.id,
+        )
+        self.task_tree.add_task(subtask)
+        parent_task.subtask_ids.append(subtask.id)
+
+        # Ensure parent has a bulletin board
+        if parent_task.id not in self.boards:
+            self.boards[parent_task.id] = BulletinBoard(parent_task.id)
+            parent_task.status = TaskStatus.DECOMPOSED
+
+        board = self.boards[parent_task.id]
+
+        # Post work item
+        await board.post(BulletinPost(
+            author_id=parent_task.assigned_agent_id or "system",
+            post_type=PostType.WORK_ITEM,
+            content=subtask_goal,
+            references_task_id=subtask.id,
+        ))
+
+        # Create agent
+        config = agent_config or self._derive_agent_config(parent_task, subtask)
+        agent = self._create_agent(config)
+        subtask.assigned_agent_id = agent.config.id
+        subtask.status = TaskStatus.IN_PROGRESS
+
+        # Subscribe to parent's board
+        board.subscribe(agent.config.id)
+
+        self._notify("subtask_spawned", {
+            "parent_task_id": parent_task.id,
+            "subtask_id": subtask.id,
+            "agent_id": agent.config.id,
+            "goal": subtask_goal,
+        })
+
+        # Start agent
+        self._running_tasks[subtask.id] = asyncio.create_task(
+            self._run_agent_on_task(agent, subtask)
+        )
+        return subtask
+
+    def _create_agent(self, config: AgentConfig) -> Agent:
+        """Create an Agent instance with provider and tools."""
+        provider = self.provider_factory(config.provider, config.model)
+        registry = ToolRegistry()
+
+        # Register domain tools
+        for tool_name in config.tool_names:
+            if tool_name in self.tool_factories:
+                registry.register(self.tool_factories[tool_name]())
+
+        # Always register meta-tools
+        registry.register(SpawnSubtaskTool())
+        registry.register(CompleteTaskTool())
+        registry.register(PostToBulletinTool())
+        registry.register(ReadBulletinTool())
+
+        agent = Agent(config, provider, registry)
+        self.agents[config.id] = agent
+        self._agent_count += 1
+        return agent
+
+    def _derive_agent_config(self, parent_task: Task, subtask: Task) -> AgentConfig:
+        """Generate an AgentConfig for a subtask based on the parent's agent."""
+        parent_agent = self.agents.get(parent_task.assigned_agent_id or "")
+        if parent_agent:
+            return AgentConfig(
+                id=str(uuid.uuid4()),
+                name=f"Worker-{subtask.id[:8]}",
+                provider=parent_agent.config.provider,
+                model=parent_agent.config.model,
+                system_prompt=(
+                    f"You are a worker agent. Complete your assigned task thoroughly.\n"
+                    f"When done, call complete_task with your result."
+                ),
+                temperature=parent_agent.config.temperature,
+                max_tokens=parent_agent.config.max_tokens,
+                tool_names=parent_agent.config.tool_names,
+            )
+        elif self.default_agent_config:
+            cfg = self.default_agent_config
+            return AgentConfig(
+                id=str(uuid.uuid4()),
+                name=f"Worker-{subtask.id[:8]}",
+                provider=cfg.provider,
+                model=cfg.model,
+                system_prompt=(
+                    f"You are a worker agent. Complete your assigned task thoroughly.\n"
+                    f"When done, call complete_task with your result."
+                ),
+                temperature=cfg.temperature,
+                max_tokens=cfg.max_tokens,
+                tool_names=cfg.tool_names,
+            )
+        else:
+            raise RuntimeError("Cannot derive agent config: no parent agent or default config")
+
+    async def wait_for_completion(self, task: Task, timeout: Optional[float] = None) -> Task:
+        """Block until a task reaches terminal state."""
+        async def _wait():
+            while not task.is_terminal():
+                await asyncio.sleep(0.2)
+            return task
+
+        if timeout:
             try:
-                callback(message)
-            except Exception as e:
-                print(f"Error in message callback: {e}")
+                await asyncio.wait_for(_wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                task.fail(f"Timed out after {timeout}s")
+        else:
+            await _wait()
+        return task
 
-    def add_message_callback(self, callback: Callable[[Message], None]):
-        """
-        Add callback to be called when messages are sent.
+    async def shutdown(self) -> None:
+        """Cancel all running agent loops."""
+        for t in self._running_tasks.values():
+            t.cancel()
+        await asyncio.gather(*self._running_tasks.values(), return_exceptions=True)
+        self._running_tasks.clear()
 
-        Args:
-            callback: Callback function taking Message parameter
-        """
-        self._message_callbacks.append(callback)
-
-    def get_message_log(self) -> List[Message]:
-        """
-        Get all logged messages.
-
-        Returns:
-            List of messages
-        """
-        return self._message_log.copy()
-
-    async def stop(self):
-        """Stop workflow execution."""
-        print("\n=== Stopping workflow execution ===")
-        self.running = False
-
-        # Cancel all tasks
-        for task in self._tasks:
-            task.cancel()
-
-        # Wait for tasks to finish
-        await asyncio.gather(*self._tasks, return_exceptions=True)
-
-        # Close all channels
-        for channel in self.channels.values():
-            channel.close()
-
-        print("Execution stopped")
-
-    def get_statistics(self) -> Dict[str, any]:
-        """
-        Get execution statistics.
-
-        Returns:
-            Dictionary with statistics
-        """
-        total_tokens = 0
-        total_messages = len(self._message_log)
-
-        for message in self._message_log:
-            usage = message.metadata.get("usage", {})
-            total_tokens += usage.get("total_tokens", 0)
-
+    def get_statistics(self) -> Dict[str, Any]:
+        all_tasks = self.task_tree.all_tasks()
         return {
-            "total_messages": total_messages,
-            "total_tokens": total_tokens,
-            "agents": len(self.agents),
-            "channels": len(self.channels)
+            "total_tasks": len(all_tasks),
+            "completed": sum(1 for t in all_tasks if t.status == TaskStatus.COMPLETED),
+            "failed": sum(1 for t in all_tasks if t.status == TaskStatus.FAILED),
+            "in_progress": sum(1 for t in all_tasks if t.status == TaskStatus.IN_PROGRESS),
+            "decomposed": sum(1 for t in all_tasks if t.status == TaskStatus.DECOMPOSED),
+            "total_agents": self._agent_count,
+            "bulletin_boards": len(self.boards),
         }
-
-    def __repr__(self) -> str:
-        """String representation."""
-        status = "running" if self.running else "stopped"
-        return f"ExecutionEngine(agents={len(self.agents)}, channels={len(self.channels)}, status={status})"

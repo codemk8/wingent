@@ -1,8 +1,10 @@
+# Server
+fastapi>=0.100.0
+uvicorn>=0.20.0
+
 # LLM Providers
 anthropic>=0.40.0
 openai>=1.0.0
 
 # Optional: Local model support
-ollama>=0.1.0  # Uncomment if using local models
-
-# No UI dependencies - tkinter is built into Python
+# ollama>=0.1.0

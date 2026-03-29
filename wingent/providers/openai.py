@@ -10,12 +10,6 @@ class OpenAIProvider(LLMProvider):
     """OpenAI provider implementation."""
 
     def __init__(self, api_key: Optional[str] = None):
-        """
-        Initialize OpenAI provider.
-
-        Args:
-            api_key: OpenAI API key (if None, will use OPENAI_API_KEY env var)
-        """
         try:
             import openai
         except ImportError:
@@ -39,45 +33,60 @@ class OpenAIProvider(LLMProvider):
 
     async def generate(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         system: str,
         temperature: float,
         max_tokens: int,
+        tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs
     ) -> Dict[str, Any]:
-        """
-        Generate response from OpenAI.
-
-        Args:
-            messages: List of message dicts with 'role' and 'content'
-            system: System prompt
-            temperature: Sampling temperature
-            max_tokens: Maximum tokens to generate
-            **kwargs: Additional parameters (model, etc.)
-
-        Returns:
-            Dictionary with content, usage, model, and stop_reason
-        """
-        # Get model from kwargs or use default
         model = kwargs.get("model", "gpt-4-turbo")
 
         # Prepend system message
         all_messages = [{"role": "system", "content": system}] + messages
 
-        # Call OpenAI API (synchronously - we can make it async later)
-        response = self.client.chat.completions.create(
+        api_kwargs = dict(
             model=model,
             messages=all_messages,
             temperature=temperature,
-            max_tokens=max_tokens
+            max_tokens=max_tokens,
         )
 
-        # Extract response
-        content = response.choices[0].message.content or ""
-        stop_reason = response.choices[0].finish_reason or "stop"
+        # Convert tool schemas from Anthropic format to OpenAI format
+        if tools:
+            openai_tools = []
+            for t in tools:
+                openai_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": t["name"],
+                        "description": t.get("description", ""),
+                        "parameters": t.get("input_schema", {}),
+                    }
+                })
+            api_kwargs["tools"] = openai_tools
+
+        response = self.client.chat.completions.create(**api_kwargs)
+
+        choice = response.choices[0]
+        content = choice.message.content or ""
+        stop_reason = choice.finish_reason or "stop"
+
+        # Parse tool calls
+        tool_calls = []
+        if choice.message.tool_calls:
+            import json
+            for tc in choice.message.tool_calls:
+                tool_calls.append({
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "input": json.loads(tc.function.arguments),
+                })
+            stop_reason = "tool_use"
 
         return {
             "content": content,
+            "tool_calls": tool_calls,
             "usage": {
                 "input_tokens": response.usage.prompt_tokens,
                 "output_tokens": response.usage.completion_tokens,
@@ -88,37 +97,16 @@ class OpenAIProvider(LLMProvider):
         }
 
     def get_available_models(self) -> List[str]:
-        """
-        Return list of available OpenAI models.
-
-        Returns:
-            List of model names
-        """
         return self._models.copy()
 
     def validate_config(self, config: Dict[str, Any]) -> bool:
-        """
-        Validate configuration for OpenAI provider.
-
-        Args:
-            config: Configuration dictionary
-
-        Returns:
-            True if valid
-        """
-        # Check if model is in available models
         model = config.get("model", "")
         if model and model not in self._models:
             return False
-
-        # Check temperature range
         temp = config.get("temperature", 0.7)
         if not (0.0 <= temp <= 2.0):
             return False
-
-        # Check max_tokens
         max_tokens = config.get("max_tokens", 4096)
         if not (1 <= max_tokens <= 128000):
             return False
-
         return True
