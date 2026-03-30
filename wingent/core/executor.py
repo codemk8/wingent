@@ -11,6 +11,7 @@ from .bulletin import BulletinBoard, BulletinPost, PostType
 from .tool import Tool, ToolRegistry
 from .agent import Agent, AgentConfig, AgentContext, AgentRole
 from .tools.meta import SpawnSubtaskTool, CompleteTaskTool, PostToBulletinTool, ReadBulletinTool
+from .prompts import get_manager_prompt, get_worker_prompt
 
 
 class TaskExecutor:
@@ -31,6 +32,7 @@ class TaskExecutor:
         max_depth: int = 3,
         max_agents: int = 10,
         max_turns_per_agent: int = 20,
+        working_directory: Optional[str] = None,
     ):
         self.provider_factory = provider_factory
         self.default_agent_config = default_agent_config
@@ -38,6 +40,7 @@ class TaskExecutor:
         self.max_depth = max_depth
         self.max_agents = max_agents
         self.max_turns_per_agent = max_turns_per_agent
+        self._working_directory = working_directory
 
         self.task_tree = TaskTree()
         self.boards: Dict[str, BulletinBoard] = {}
@@ -235,7 +238,11 @@ class TaskExecutor:
 
         # Create agent
         config = agent_config or self._derive_agent_config(parent_task, subtask)
-        agent = self._create_agent(config)
+        parent_agent = self.agents.get(parent_task.assigned_agent_id or "")
+        parent_level = parent_agent.level if parent_agent else 0
+        agent = self._create_agent(config, level=parent_level + 1, parent=parent_agent)
+        if not config.can_spawn:
+            agent.role = AgentRole.WORKER
         subtask.assigned_agent_id = agent.config.id
         subtask.status = TaskStatus.IN_PROGRESS
 
@@ -255,7 +262,8 @@ class TaskExecutor:
         )
         return subtask
 
-    def _create_agent(self, config: AgentConfig) -> Agent:
+    def _create_agent(self, config: AgentConfig, level: int = 0,
+                      parent: Optional[Agent] = None) -> Agent:
         """Create an Agent instance with provider and tools."""
         provider = self.provider_factory(config.provider, config.model)
         registry = ToolRegistry()
@@ -271,45 +279,43 @@ class TaskExecutor:
         registry.register(PostToBulletinTool())
         registry.register(ReadBulletinTool())
 
-        agent = Agent(config, provider, registry)
+        agent = Agent(config, provider, registry, level=level, parent=parent)
         self.agents[config.id] = agent
         self._agent_count += 1
         return agent
 
     def _derive_agent_config(self, parent_task: Task, subtask: Task) -> AgentConfig:
-        """Generate an AgentConfig for a subtask based on the parent's agent."""
-        parent_agent = self.agents.get(parent_task.assigned_agent_id or "")
-        if parent_agent:
-            return AgentConfig(
-                id=str(uuid.uuid4()),
-                name=f"Worker-{subtask.id[:8]}",
-                provider=parent_agent.config.provider,
-                model=parent_agent.config.model,
-                system_prompt=(
-                    f"You are a worker agent. Complete your assigned task thoroughly.\n"
-                    f"When done, call complete_task with your result."
-                ),
-                temperature=parent_agent.config.temperature,
-                max_tokens=parent_agent.config.max_tokens,
-                tool_names=parent_agent.config.tool_names,
-            )
-        elif self.default_agent_config:
-            cfg = self.default_agent_config
-            return AgentConfig(
-                id=str(uuid.uuid4()),
-                name=f"Worker-{subtask.id[:8]}",
-                provider=cfg.provider,
-                model=cfg.model,
-                system_prompt=(
-                    f"You are a worker agent. Complete your assigned task thoroughly.\n"
-                    f"When done, call complete_task with your result."
-                ),
-                temperature=cfg.temperature,
-                max_tokens=cfg.max_tokens,
-                tool_names=cfg.tool_names,
-            )
+        """Generate an AgentConfig for a subtask based on the parent's agent.
+
+        Agents at max_depth - 1 become workers (cannot spawn further).
+        All others get the manager prompt and can continue to decompose.
+        """
+        depth = self.task_tree.get_depth(parent_task.id) + 1
+        is_leaf = depth >= self.max_depth - 1
+
+        if is_leaf:
+            system_prompt = get_worker_prompt(self._working_directory)
+            name = f"Worker-{subtask.id[:8]}"
         else:
+            system_prompt = get_manager_prompt(self._working_directory)
+            name = f"Agent-{subtask.id[:8]}"
+
+        base = self.agents.get(parent_task.assigned_agent_id or "")
+        cfg = base.config if base else self.default_agent_config
+        if not cfg:
             raise RuntimeError("Cannot derive agent config: no parent agent or default config")
+
+        return AgentConfig(
+            id=str(uuid.uuid4()),
+            name=name,
+            provider=cfg.provider,
+            model=cfg.model,
+            system_prompt=system_prompt,
+            temperature=cfg.temperature,
+            max_tokens=cfg.max_tokens,
+            tool_names=cfg.tool_names,
+            can_spawn=not is_leaf,
+        )
 
     async def wait_for_completion(self, task: Task, timeout: Optional[float] = None) -> Task:
         """Block until a task reaches terminal state."""

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from ..state import app_state
 from ...core.agent import AgentConfig
 from ...core.executor import TaskExecutor
+from ...core.prompts import get_manager_prompt
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -49,19 +50,7 @@ async def submit_task(req: TaskSubmitRequest):
     ):
         raise HTTPException(409, "An execution is already running. Stop it first.")
 
-    # Build system prompt with optional working directory context
-    system_parts = [
-        "You are a capable autonomous agent. Analyze the task given to you.",
-        "For simple tasks, solve them directly and call complete_task with your answer.",
-        "For complex tasks with multiple distinct parts, use spawn_subtask to break them down.",
-        "Each subtask will be handled by a dedicated agent.",
-        "Always call complete_task when you are done.",
-    ]
     if req.working_directory:
-        system_parts.append(
-            f"\nYou have access to a working directory: {req.working_directory}"
-            "\nUse this context when the task involves files or code in that directory."
-        )
         app_state.working_directory = req.working_directory
 
     # Pick or create agent config
@@ -73,7 +62,7 @@ async def submit_task(req: TaskSubmitRequest):
             name="Root Agent",
             provider=req.provider,
             model=req.model,
-            system_prompt="\n".join(system_parts),
+            system_prompt=get_manager_prompt(req.working_directory),
             temperature=0.3,
             max_tokens=4096,
         )
@@ -88,6 +77,7 @@ async def submit_task(req: TaskSubmitRequest):
         max_depth=3,
         max_agents=10,
         max_turns_per_agent=20,
+        working_directory=req.working_directory,
     )
     executor.add_callback(app_state.ws_manager.execution_callback)
     app_state.executor = executor

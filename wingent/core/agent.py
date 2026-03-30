@@ -93,13 +93,19 @@ class Agent:
     """Runtime agent instance with tool-use loop."""
 
     def __init__(self, config: 'AgentConfig', provider: 'LLMProvider',
-                 tools: 'ToolRegistry'):
+                 tools: 'ToolRegistry', level: int = 0,
+                 parent: Optional['Agent'] = None):
         self.config = config
         self.provider = provider
         self.tools = tools
-        self.role: AgentRole = AgentRole.WORKER
+        self.role: AgentRole = AgentRole.MANAGER
         self.current_task_id: Optional[str] = None
         self.message_history: List[Dict[str, Any]] = []
+        self.level: int = level
+        self.parent: Optional['Agent'] = parent
+        self.children: List['Agent'] = []
+        if parent is not None:
+            parent.children.append(self)
 
     async def run_turn(self, context: AgentContext) -> TurnResult:
         """Execute one reasoning turn with a tool-use loop.
