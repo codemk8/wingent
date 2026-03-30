@@ -34,12 +34,14 @@ export interface ExecutionEvent {
 export const PROVIDER_COLORS: Record<string, string> = {
   anthropic: '#8B5CF6',
   openai: '#10B981',
+  openrouter: '#3B82F6',
   local: '#F59E0B',
 };
 
 export const PROVIDER_BG: Record<string, string> = {
   anthropic: 'bg-purple-100 border-purple-300',
   openai: 'bg-green-100 border-green-300',
+  openrouter: 'bg-blue-100 border-blue-300',
   local: 'bg-amber-100 border-amber-300',
 };
 

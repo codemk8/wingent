@@ -23,6 +23,9 @@ def _make_provider(provider_name: str, model: str):
     elif provider_name == "openai":
         from ...providers.openai import OpenAIProvider
         return OpenAIProvider()
+    elif provider_name == "openrouter":
+        from ...providers.openrouter import OpenRouterProvider
+        return OpenRouterProvider()
     elif provider_name == "local":
         from ...providers.local import LocalProvider
         return LocalProvider()
@@ -34,6 +37,7 @@ def _default_companion_model(provider: str) -> str:
     defaults = {
         "anthropic": "claude-haiku-4-5-20251001",
         "openai": "gpt-4o-mini",
+        "openrouter": "google/gemini-2.0-flash-001",
         "local": "llama3",
     }
     return defaults.get(provider, "claude-haiku-4-5-20251001")

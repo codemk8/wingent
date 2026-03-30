@@ -126,6 +126,18 @@ PROVIDER_MODELS = {
         "gpt-4",
         "gpt-3.5-turbo",
     ],
+    "openrouter": [
+        "google/gemini-2.0-flash-001",
+        "meta-llama/llama-3.3-70b-instruct",
+        "mistralai/mistral-small-2501",
+        "qwen/qwen-2.5-72b-instruct",
+        "anthropic/claude-3.5-haiku",
+        "openai/gpt-4o-mini",
+        "google/gemini-2.5-pro-preview",
+        "anthropic/claude-sonnet-4",
+        "openai/gpt-4o",
+        "deepseek/deepseek-chat-v3-0324",
+    ],
     "local": [
         "llama3",
         "mistral",
