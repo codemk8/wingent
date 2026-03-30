@@ -33,10 +33,17 @@ export const applyTopology = (name: string) =>
 export const listProviders = () => json<Record<string, string[]>>('/api/agents/providers');
 
 // Tasks
-export const submitTask = (goal: string, completion_criteria: string, agent_config_id?: string) =>
+export const submitTask = (opts: {
+  goal: string;
+  completion_criteria?: string;
+  agent_config_id?: string;
+  working_directory?: string;
+  provider?: string;
+  model?: string;
+}) =>
   json<{ task_id: string; status: string }>('/api/tasks', {
     method: 'POST',
-    body: JSON.stringify({ goal, completion_criteria, agent_config_id }),
+    body: JSON.stringify(opts),
   });
 export const listTasks = () => json<Task[]>('/api/tasks');
 export const getTask = (id: string) => json<Task>(`/api/tasks/${id}`);

@@ -6,8 +6,9 @@ export default function Monitor() {
   const tasks = useStore(s => s.tasks);
   const events = useStore(s => s.events);
   const isRunning = useStore(s => s.isRunning);
-  const setShowTaskModal = useStore(s => s.setShowTaskModal);
+  const currentGoal = useStore(s => s.currentGoal);
   const stopExecution = useStore(s => s.stopExecution);
+  const resetExecution = useStore(s => s.resetExecution);
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -24,25 +25,30 @@ export default function Monitor() {
   return (
     <div className="w-96 bg-white border-l border-slate-200 flex flex-col h-full">
       {/* Header */}
-      <div className="px-4 py-3 bg-slate-900 text-white flex items-center justify-between">
-        <h2 className="font-semibold text-sm">Execution Monitor</h2>
-        <div className="flex gap-2">
-          {!isRunning ? (
-            <button
-              className="px-3 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
-              onClick={() => setShowTaskModal(true)}
-            >
-              Submit Task
-            </button>
-          ) : (
-            <button
-              className="px-3 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
-              onClick={stopExecution}
-            >
-              Stop
-            </button>
-          )}
+      <div className="px-4 py-3 bg-slate-900 text-white">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="font-semibold text-sm">Execution Monitor</h2>
+          <div className="flex gap-2">
+            {isRunning ? (
+              <button
+                className="px-3 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
+                onClick={stopExecution}
+              >
+                Stop
+              </button>
+            ) : (
+              <button
+                className="px-3 py-1 text-xs bg-slate-600 text-white rounded hover:bg-slate-500 transition-colors"
+                onClick={resetExecution}
+              >
+                New Task
+              </button>
+            )}
+          </div>
         </div>
+        {currentGoal && (
+          <p className="text-xs text-slate-400 truncate" title={currentGoal}>{currentGoal}</p>
+        )}
       </div>
 
       {/* Task Tree */}

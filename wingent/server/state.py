@@ -142,6 +142,7 @@ class AppState:
         self.agent_configs: Dict[str, AgentConfig] = {}
         self.executor: Optional[TaskExecutor] = None
         self.ws_manager = WebSocketManager()
+        self.working_directory: Optional[str] = None
 
     def add_agent_config(self, config: AgentConfig) -> AgentConfig:
         if not config.id:

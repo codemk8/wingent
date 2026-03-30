@@ -1,20 +1,18 @@
-import { useEffect } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
 import Canvas from './components/Canvas';
 import Sidebar from './components/Sidebar';
 import Monitor from './components/Monitor';
 import AgentConfigModal from './components/AgentConfigModal';
 import TaskSubmitModal from './components/TaskSubmitModal';
+import Landing from './components/Landing';
 import { useStore } from './store';
 
 export default function App() {
-  const loadAgents = useStore(s => s.loadAgents);
-  const connectWs = useStore(s => s.connectWs);
+  const view = useStore(s => s.view);
 
-  useEffect(() => {
-    loadAgents();
-    connectWs();
-  }, [loadAgents, connectWs]);
+  if (view === 'landing') {
+    return <Landing />;
+  }
 
   return (
     <div className="h-screen flex flex-col">

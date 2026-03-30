@@ -2,7 +2,13 @@ import { create } from 'zustand';
 import type { AgentConfig, Task, ExecutionEvent } from './types';
 import * as api from './api';
 
+type View = 'landing' | 'execution';
+
 interface Store {
+  // Navigation
+  view: View;
+  setView: (v: View) => void;
+
   // Agents (design-time)
   agents: Record<string, AgentConfig>;
   loadAgents: () => Promise<void>;
@@ -15,9 +21,18 @@ interface Store {
   tasks: Record<string, Task>;
   events: ExecutionEvent[];
   isRunning: boolean;
-  submitTask: (goal: string, criteria: string, agentId?: string) => Promise<void>;
+  currentGoal: string;
+  submitTask: (opts: {
+    goal: string;
+    completion_criteria?: string;
+    working_directory?: string;
+    provider?: string;
+    model?: string;
+    agent_config_id?: string;
+  }) => Promise<void>;
   stopExecution: () => Promise<void>;
   refreshTasks: () => Promise<void>;
+  resetExecution: () => void;
 
   // WebSocket
   ws: WebSocket | null;
@@ -34,6 +49,10 @@ interface Store {
 }
 
 export const useStore = create<Store>((set, get) => ({
+  // Navigation
+  view: 'landing',
+  setView: (v) => set({ view: v }),
+
   // Agents
   agents: {},
   loadAgents: async () => {
@@ -70,9 +89,11 @@ export const useStore = create<Store>((set, get) => ({
   tasks: {},
   events: [],
   isRunning: false,
-  submitTask: async (goal, criteria, agentId) => {
-    set({ tasks: {}, events: [], isRunning: true });
-    await api.submitTask(goal, criteria, agentId);
+  currentGoal: '',
+  submitTask: async (opts) => {
+    set({ tasks: {}, events: [], isRunning: true, currentGoal: opts.goal, view: 'execution' });
+    get().connectWs();
+    await api.submitTask(opts);
   },
   stopExecution: async () => {
     await api.stopExecution();
@@ -84,10 +105,14 @@ export const useStore = create<Store>((set, get) => ({
     list.forEach(t => { tasks[t.id] = t; });
     set({ tasks });
   },
+  resetExecution: () => {
+    set({ tasks: {}, events: [], isRunning: false, currentGoal: '', view: 'landing' });
+  },
 
   // WebSocket
   ws: null,
   connectWs: () => {
+    if (get().ws) return;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
     ws.onmessage = (e) => {
@@ -99,17 +124,17 @@ export const useStore = create<Store>((set, get) => ({
       };
       set(s => ({ events: [...s.events, event] }));
 
-      // Refresh tasks on significant events
       if (['task_started', 'subtask_spawned', 'task_completed', 'task_failed', 'turn_completed'].includes(msg.event)) {
         get().refreshTasks();
       }
       if (msg.event === 'task_completed' || msg.event === 'task_failed') {
-        // Check if root task is done
-        const tasks = get().tasks;
-        const roots = Object.values(tasks).filter(t => !t.parent_task_id);
-        if (roots.length > 0 && roots.every(t => t.status === 'completed' || t.status === 'failed')) {
-          set({ isRunning: false });
-        }
+        setTimeout(() => {
+          const tasks = get().tasks;
+          const roots = Object.values(tasks).filter(t => !t.parent_task_id);
+          if (roots.length > 0 && roots.every(t => t.status === 'completed' || t.status === 'failed')) {
+            set({ isRunning: false });
+          }
+        }, 500);
       }
     };
     ws.onclose = () => set({ ws: null });

@@ -17,7 +17,11 @@ export default function TaskSubmitModal() {
 
   const handleSubmit = async () => {
     if (!goal.trim()) return;
-    await submitTask(goal, criteria, agentId || undefined);
+    await submitTask({
+      goal,
+      completion_criteria: criteria || undefined,
+      agent_config_id: agentId || undefined,
+    });
     setGoal('');
     setCriteria('');
     setShowTaskModal(false);

@@ -2,7 +2,7 @@
 Task execution endpoints.
 """
 
-import asyncio
+import uuid
 from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -30,27 +30,56 @@ def _make_provider(provider_name: str, model: str):
 
 class TaskSubmitRequest(BaseModel):
     goal: str
-    completion_criteria: str
+    completion_criteria: str = ""
     agent_config_id: Optional[str] = None
+    working_directory: Optional[str] = None
+    provider: str = "anthropic"
+    model: str = "claude-sonnet-4-5-20250929"
 
 
 @router.post("")
 async def submit_task(req: TaskSubmitRequest):
-    """Submit a new root task for execution."""
+    """Submit a new root task for execution.
+
+    If no agent_config_id is provided, a default root agent is created
+    automatically — the framework decides what agents to spawn.
+    """
     if app_state.executor and any(
         not t.is_terminal() for t in app_state.executor.task_tree.all_tasks()
     ):
         raise HTTPException(409, "An execution is already running. Stop it first.")
 
-    # Pick agent config
-    if req.agent_config_id:
-        config = app_state.agent_configs.get(req.agent_config_id)
-        if not config:
-            raise HTTPException(404, "Agent config not found")
-    elif app_state.agent_configs:
-        config = next(iter(app_state.agent_configs.values()))
+    # Build system prompt with optional working directory context
+    system_parts = [
+        "You are a capable autonomous agent. Analyze the task given to you.",
+        "For simple tasks, solve them directly and call complete_task with your answer.",
+        "For complex tasks with multiple distinct parts, use spawn_subtask to break them down.",
+        "Each subtask will be handled by a dedicated agent.",
+        "Always call complete_task when you are done.",
+    ]
+    if req.working_directory:
+        system_parts.append(
+            f"\nYou have access to a working directory: {req.working_directory}"
+            "\nUse this context when the task involves files or code in that directory."
+        )
+        app_state.working_directory = req.working_directory
+
+    # Pick or create agent config
+    if req.agent_config_id and req.agent_config_id in app_state.agent_configs:
+        config = app_state.agent_configs[req.agent_config_id]
     else:
-        raise HTTPException(400, "No agent configs defined. Create one first.")
+        config = AgentConfig(
+            id=str(uuid.uuid4()),
+            name="Root Agent",
+            provider=req.provider,
+            model=req.model,
+            system_prompt="\n".join(system_parts),
+            temperature=0.3,
+            max_tokens=4096,
+        )
+
+    # Auto-generate completion criteria if not provided
+    criteria = req.completion_criteria or "Complete the task thoroughly and report the result."
 
     # Create executor
     executor = TaskExecutor(
@@ -63,7 +92,7 @@ async def submit_task(req: TaskSubmitRequest):
     executor.add_callback(app_state.ws_manager.execution_callback)
     app_state.executor = executor
 
-    task = await executor.submit(req.goal, req.completion_criteria, config)
+    task = await executor.submit(req.goal, criteria, config)
 
     return {
         "task_id": task.id,
@@ -74,7 +103,6 @@ async def submit_task(req: TaskSubmitRequest):
 
 @router.get("")
 async def list_tasks():
-    """List all tasks in the current execution."""
     if not app_state.executor:
         return []
     return [_task_to_dict(t) for t in app_state.executor.task_tree.all_tasks()]

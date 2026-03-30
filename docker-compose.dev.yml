@@ -1,0 +1,33 @@
+services:
+  backend:
+    image: python:3.11-slim
+    working_dir: /app
+    command: >
+      bash -c "pip install -q -r requirements.txt &&
+               python -m uvicorn wingent.server.app:app --host 0.0.0.0 --port 8000 --reload"
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      # Mount the user's home directory so agents can access local projects.
+      # The path inside the container mirrors the host path, so
+      # "/Users/me/projects/foo" in the UI maps to the same path in the container.
+      - ${HOST_WORKSPACE:-~}:${HOST_WORKSPACE:-/host}
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+
+  frontend:
+    image: node:20-slim
+    working_dir: /app
+    command: bash -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    environment:
+      - VITE_API_URL=http://backend:8000
+
+volumes:
+  frontend_node_modules:
