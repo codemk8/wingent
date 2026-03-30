@@ -42,6 +42,14 @@ def get_worker_prompt(working_directory: Optional[str] = None) -> str:
     return "\n".join(parts)
 
 
+def get_companion_prompt(purpose: str) -> str:
+    """Return the system prompt for a companion agent by purpose."""
+    prompts = _load()
+    if purpose not in prompts:
+        raise KeyError(f"No companion prompt found for purpose: {purpose}")
+    return prompts[purpose].strip()
+
+
 def reload():
     """Force reload prompts from disk (useful for hot-reloading)."""
     global _prompts

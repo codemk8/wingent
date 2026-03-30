@@ -58,7 +58,14 @@ class SpawnSubtaskTool(Tool):
 
 
 class CompleteTaskTool(Tool):
-    """Allows an agent to declare its current task as completed."""
+    """Allows an agent to declare its current task as completed.
+
+    If the agent has an 'evaluator' companion, the result is checked
+    against the task goal and completion criteria before being accepted.
+    The agent gets up to MAX_EVAL_RETRIES chances to revise its result.
+    """
+
+    MAX_EVAL_RETRIES = 2
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
@@ -78,6 +85,26 @@ class CompleteTaskTool(Tool):
         )
 
     async def execute(self, context: AgentContext, result: str, **kwargs) -> str:
+        # If agent has an evaluator companion, check the result first
+        agent = context.agent
+        if agent:
+            evaluator = agent.get_companion("evaluator")
+            if evaluator:
+                eval_prompt = (
+                    f"## Task Goal\n{context.task.goal}\n\n"
+                    f"## Completion Criteria\n{context.task.completion_criteria}\n\n"
+                    f"## Agent's Result\n{result}"
+                )
+                verdict = await evaluator.run(eval_prompt)
+                if not verdict.strip().upper().startswith("PASS"):
+                    # Rejection — don't mark complete, return feedback to agent
+                    reason = verdict.strip()
+                    return (
+                        f"Evaluation FAILED. Your result did not meet the completion criteria.\n"
+                        f"Evaluator feedback: {reason}\n"
+                        f"Please revise your work and call complete_task again."
+                    )
+
         context.task.complete(result)
 
         # Post result to parent's bulletin board if this is a subtask

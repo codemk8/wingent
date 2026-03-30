@@ -77,6 +77,7 @@ class AgentContext:
     bulletin_board: Optional['BulletinBoard']
     task_tree: 'TaskTree'
     agent_spawner: Callable  # async callable to spawn subagents
+    agent: Optional['Agent'] = None  # back-reference to the owning agent
 
 
 @dataclass
@@ -87,6 +88,45 @@ class TurnResult:
     task_completed: bool = False
     subtasks_spawned: int = 0
     usage: Dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class CompanionConfig:
+    """Configuration for a lightweight companion agent."""
+    provider: str
+    model: str
+    temperature: float = 0.3
+    max_tokens: int = 1024
+
+
+class CompanionAgent:
+    """Lightweight, stateless agent for routine tasks (evaluation, summarization, etc.).
+
+    Unlike the main Agent, a CompanionAgent:
+    - Has no conversation history (each call is independent)
+    - Has no tools (pure prompt-in, text-out)
+    - Uses a cheaper/faster LLM
+    - Is identified by a purpose string (e.g., "evaluator", "summarizer")
+    """
+
+    def __init__(self, purpose: str, system_prompt: str,
+                 provider: 'LLMProvider', config: CompanionConfig):
+        self.purpose = purpose
+        self.system_prompt = system_prompt
+        self.provider = provider
+        self.config = config
+
+    async def run(self, prompt: str) -> str:
+        """Send a single prompt and return the text response."""
+        messages = [{"role": "user", "content": prompt}]
+        response = await self.provider.generate(
+            messages=messages,
+            system=self.system_prompt,
+            temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens,
+            model=self.config.model,
+        )
+        return response.get("content", "")
 
 
 class Agent:
@@ -104,6 +144,7 @@ class Agent:
         self.level: int = level
         self.parent: Optional['Agent'] = parent
         self.children: List['Agent'] = []
+        self.companions: Dict[str, CompanionAgent] = {}
         if parent is not None:
             parent.children.append(self)
 
@@ -249,6 +290,21 @@ class Agent:
             parts.append("\nAll subtasks are complete. Please synthesize the results and complete the parent task.")
 
         return "\n".join(parts)
+
+    def add_companion(self, companion: CompanionAgent) -> None:
+        """Register a companion agent by its purpose."""
+        self.companions[companion.purpose] = companion
+
+    def get_companion(self, purpose: str) -> Optional[CompanionAgent]:
+        """Get a companion agent by purpose."""
+        return self.companions.get(purpose)
+
+    async def ask_companion(self, purpose: str, prompt: str) -> Optional[str]:
+        """Invoke a companion agent by purpose. Returns None if not found."""
+        companion = self.companions.get(purpose)
+        if companion is None:
+            return None
+        return await companion.run(prompt)
 
     def add_context_message(self, content: str) -> None:
         """Add a user message to provide additional context."""

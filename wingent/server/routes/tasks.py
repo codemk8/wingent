@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..state import app_state
-from ...core.agent import AgentConfig
+from ...core.agent import AgentConfig, CompanionConfig
 from ...core.executor import TaskExecutor
 from ...core.prompts import get_manager_prompt
 
@@ -27,6 +27,16 @@ def _make_provider(provider_name: str, model: str):
         from ...providers.local import LocalProvider
         return LocalProvider()
     raise ValueError(f"Unknown provider: {provider_name}")
+
+
+def _default_companion_model(provider: str) -> str:
+    """Pick a cheap/fast model for companion agents based on provider."""
+    defaults = {
+        "anthropic": "claude-haiku-4-5-20251001",
+        "openai": "gpt-4o-mini",
+        "local": "llama3",
+    }
+    return defaults.get(provider, "claude-haiku-4-5-20251001")
 
 
 class TaskSubmitRequest(BaseModel):
@@ -70,6 +80,14 @@ async def submit_task(req: TaskSubmitRequest):
     # Auto-generate completion criteria if not provided
     criteria = req.completion_criteria or "Complete the task thoroughly and report the result."
 
+    # Companion config — use a cheap model for evaluation
+    companion_config = CompanionConfig(
+        provider=req.provider,
+        model=_default_companion_model(req.provider),
+        temperature=0.2,
+        max_tokens=256,
+    )
+
     # Create executor
     executor = TaskExecutor(
         provider_factory=_make_provider,
@@ -78,6 +96,7 @@ async def submit_task(req: TaskSubmitRequest):
         max_agents=10,
         max_turns_per_agent=20,
         working_directory=req.working_directory,
+        companion_config=companion_config,
     )
     executor.add_callback(app_state.ws_manager.execution_callback)
     app_state.executor = executor

@@ -9,9 +9,9 @@ import uuid
 from .task import Task, TaskStatus, TaskTree
 from .bulletin import BulletinBoard, BulletinPost, PostType
 from .tool import Tool, ToolRegistry
-from .agent import Agent, AgentConfig, AgentContext, AgentRole
+from .agent import Agent, AgentConfig, AgentContext, AgentRole, CompanionAgent, CompanionConfig
 from .tools.meta import SpawnSubtaskTool, CompleteTaskTool, PostToBulletinTool, ReadBulletinTool
-from .prompts import get_manager_prompt, get_worker_prompt
+from .prompts import get_manager_prompt, get_worker_prompt, get_companion_prompt
 
 
 class TaskExecutor:
@@ -33,6 +33,7 @@ class TaskExecutor:
         max_agents: int = 10,
         max_turns_per_agent: int = 20,
         working_directory: Optional[str] = None,
+        companion_config: Optional[CompanionConfig] = None,
     ):
         self.provider_factory = provider_factory
         self.default_agent_config = default_agent_config
@@ -41,6 +42,7 @@ class TaskExecutor:
         self.max_agents = max_agents
         self.max_turns_per_agent = max_turns_per_agent
         self._working_directory = working_directory
+        self.companion_config = companion_config
 
         self.task_tree = TaskTree()
         self.boards: Dict[str, BulletinBoard] = {}
@@ -99,6 +101,7 @@ class TaskExecutor:
             bulletin_board=parent_board,
             task_tree=self.task_tree,
             agent_spawner=self._spawn_agent_for_subtask,
+            agent=agent,
         )
 
         turns = 0
@@ -159,6 +162,7 @@ class TaskExecutor:
                     bulletin_board=board,
                     task_tree=self.task_tree,
                     agent_spawner=self._spawn_agent_for_subtask,
+                    agent=manager,
                 )
                 await manager.run_turn(context)
                 turns += 1
@@ -184,6 +188,7 @@ class TaskExecutor:
                         bulletin_board=board,
                         task_tree=self.task_tree,
                         agent_spawner=self._spawn_agent_for_subtask,
+                        agent=manager,
                     )
                     await manager.run_turn(context)
                     turns += 1
@@ -280,6 +285,18 @@ class TaskExecutor:
         registry.register(ReadBulletinTool())
 
         agent = Agent(config, provider, registry, level=level, parent=parent)
+
+        # Attach companion agents
+        if self.companion_config:
+            cc = self.companion_config
+            companion_provider = self.provider_factory(cc.provider, cc.model)
+            agent.add_companion(CompanionAgent(
+                purpose="evaluator",
+                system_prompt=get_companion_prompt("evaluator"),
+                provider=companion_provider,
+                config=cc,
+            ))
+
         self.agents[config.id] = agent
         self._agent_count += 1
         return agent
