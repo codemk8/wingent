@@ -302,19 +302,34 @@ def test_decomposition():
     print("  PASS: test_decomposition")
 
 
-def test_max_depth_limit():
-    """Test that max_depth prevents infinite decomposition."""
+def test_subtask_agents_cannot_spawn():
+    """Test that subtask agents are workers and cannot decompose further."""
     async def _test():
-        class AlwaysDecomposeProvider:
+        call_count = 0
+
+        class TestProvider:
             async def generate(self, messages, system, temperature, max_tokens,
                                tools=None, **kwargs):
-                return make_tool_call("spawn_subtask", {
-                    "goal": "Do more work",
-                    "completion_criteria": "Something",
-                })
+                nonlocal call_count
+                call_count += 1
+
+                # Manager synthesizing
+                for msg in messages:
+                    if isinstance(msg.get("content"), str) and "All subtasks are now complete" in msg["content"]:
+                        return make_tool_call("complete_task", {"result": "Synthesized"})
+
+                # Root: spawn one subtask
+                if call_count == 1:
+                    return make_tool_call("spawn_subtask", {
+                        "goal": "Sub work",
+                        "completion_criteria": "Done",
+                    })
+
+                # Subtask worker: complete directly
+                return make_tool_call("complete_task", {"result": "Worker done"})
 
         def factory(pn, m):
-            return AlwaysDecomposeProvider()
+            return TestProvider()
 
         config = AgentConfig(
             id="root", name="Root", provider="mock",
@@ -323,20 +338,24 @@ def test_max_depth_limit():
         executor = TaskExecutor(
             provider_factory=factory,
             default_agent_config=config,
-            max_depth=2,
             max_turns_per_agent=5,
         )
 
         task = await executor.submit("Deep task", "criteria")
         await executor.wait_for_completion(task, timeout=15)
 
-        # Should eventually fail or complete (depth limit prevents infinite recursion)
-        assert task.is_terminal()
-        # The deepest agents should hit the depth limit error in spawn_subtask
+        assert task.status == TaskStatus.COMPLETED
+
+        # All subtask agents should be workers with can_spawn=False
+        for agent in executor.agents.values():
+            if agent.level > 0:
+                assert agent.role == AgentRole.WORKER
+                assert agent.config.can_spawn is False
+
         await executor.shutdown()
 
     asyncio.run(_test())
-    print("  PASS: test_max_depth_limit")
+    print("  PASS: test_subtask_agents_cannot_spawn")
 
 
 def test_max_turns_limit():
@@ -662,12 +681,12 @@ def test_evaluator_fail_then_pass():
     print("  PASS: test_evaluator_fail_then_pass")
 
 
-def test_worker_role_at_max_depth():
-    """Test that agents at max depth get WORKER role and can_spawn=False."""
+def test_all_subtask_agents_are_workers():
+    """Test that all subtask agents get WORKER role regardless of depth."""
     async def _test():
         call_count = 0
 
-        class DepthTestProvider:
+        class TestProvider:
             async def generate(self, messages, system, temperature, max_tokens,
                                tools=None, **kwargs):
                 nonlocal call_count
@@ -678,18 +697,18 @@ def test_worker_role_at_max_depth():
                     if isinstance(msg.get("content"), str) and "All subtasks are now complete" in msg["content"]:
                         return make_tool_call("complete_task", {"result": "Synthesized"})
 
-                # Worker should complete directly
-                if "cannot spawn" in system.lower() or "worker agent" in system.lower():
-                    return make_tool_call("complete_task", {"result": "Worker done"})
-
                 # Root: spawn one subtask
-                return make_tool_call("spawn_subtask", {
-                    "goal": "Sub work",
-                    "completion_criteria": "Done",
-                })
+                if call_count == 1:
+                    return make_tool_call("spawn_subtask", {
+                        "goal": "Sub work",
+                        "completion_criteria": "Done",
+                    })
+
+                # Worker completes directly
+                return make_tool_call("complete_task", {"result": "Worker done"})
 
         def factory(pn, m):
-            return DepthTestProvider()
+            return TestProvider()
 
         config = AgentConfig(
             id="root", name="Root", provider="mock",
@@ -698,7 +717,6 @@ def test_worker_role_at_max_depth():
         executor = TaskExecutor(
             provider_factory=factory,
             default_agent_config=config,
-            max_depth=2,
             max_turns_per_agent=10,
         )
 
@@ -707,18 +725,17 @@ def test_worker_role_at_max_depth():
 
         assert task.status == TaskStatus.COMPLETED
 
-        # Check that child agent has worker properties
+        # All child agents should be workers
         child_agents = [a for a in executor.agents.values() if a.level > 0]
         assert len(child_agents) >= 1
         for child in child_agents:
-            if child.level >= executor.max_depth - 1:
-                assert child.role == AgentRole.WORKER
-                assert child.config.can_spawn is False
+            assert child.role == AgentRole.WORKER
+            assert child.config.can_spawn is False
 
         await executor.shutdown()
 
     asyncio.run(_test())
-    print("  PASS: test_worker_role_at_max_depth")
+    print("  PASS: test_all_subtask_agents_are_workers")
 
 
 def test_evaluator_rejects_incomplete_task():
@@ -1092,12 +1109,12 @@ if __name__ == "__main__":
     print("\nIntegration Tests:")
     test_direct_completion()
     test_decomposition()
-    test_max_depth_limit()
+    test_subtask_agents_cannot_spawn()
     test_max_turns_limit()
     test_evaluator_pass()
     test_evaluator_fail_then_pass()
     test_evaluator_rejects_incomplete_task()
-    test_worker_role_at_max_depth()
+    test_all_subtask_agents_are_workers()
     test_companion_config_wiring()
     test_planner_auto_decompose()
     test_planner_direct_no_decompose()

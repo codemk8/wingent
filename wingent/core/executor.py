@@ -221,14 +221,7 @@ class TaskExecutor:
         subtask_criteria: str,
         agent_config: Optional[AgentConfig] = None,
     ) -> Task:
-        """Create a subtask, bulletin board, and agent. Start the agent."""
-        # Check limits
-        depth = self.task_tree.get_depth(parent_task.id)
-        if depth >= self.max_depth:
-            raise RuntimeError(
-                f"Max decomposition depth ({self.max_depth}) reached. "
-                "Complete the task directly instead of spawning more subtasks."
-            )
+        """Create a subtask, bulletin board, and worker agent. Start the agent."""
         if self._agent_count >= self.max_agents:
             raise RuntimeError(
                 f"Max agent limit ({self.max_agents}) reached. "
@@ -259,13 +252,12 @@ class TaskExecutor:
             references_task_id=subtask.id,
         ))
 
-        # Create agent
+        # Create worker agent
         config = agent_config or self._derive_agent_config(parent_task, subtask)
         parent_agent = self.agents.get(parent_task.assigned_agent_id or "")
         parent_level = parent_agent.level if parent_agent else 0
         agent = self._create_agent(config, level=parent_level + 1, parent=parent_agent)
-        if not config.can_spawn:
-            agent.role = AgentRole.WORKER
+        agent.role = AgentRole.WORKER
         subtask.assigned_agent_id = agent.config.id
         subtask.status = TaskStatus.IN_PROGRESS
 
@@ -323,19 +315,9 @@ class TaskExecutor:
     def _derive_agent_config(self, parent_task: Task, subtask: Task) -> AgentConfig:
         """Generate an AgentConfig for a subtask based on the parent's agent.
 
-        Agents at max_depth - 1 become workers (cannot spawn further).
-        All others get the manager prompt and can continue to decompose.
+        All subtask agents are workers — decomposition only happens once
+        at the root level.
         """
-        depth = self.task_tree.get_depth(parent_task.id) + 1
-        is_leaf = depth >= self.max_depth - 1
-
-        if is_leaf:
-            system_prompt = get_worker_prompt(self._working_directory)
-            name = f"Worker-{subtask.id[:8]}"
-        else:
-            system_prompt = get_manager_prompt(self._working_directory)
-            name = f"Agent-{subtask.id[:8]}"
-
         base = self.agents.get(parent_task.assigned_agent_id or "")
         cfg = base.config if base else self.default_agent_config
         if not cfg:
@@ -343,14 +325,14 @@ class TaskExecutor:
 
         return AgentConfig(
             id=str(uuid.uuid4()),
-            name=name,
+            name=f"Worker-{subtask.id[:8]}",
             provider=cfg.provider,
             model=cfg.model,
-            system_prompt=system_prompt,
+            system_prompt=get_worker_prompt(self._working_directory),
             temperature=cfg.temperature,
             max_tokens=cfg.max_tokens,
             tool_names=cfg.tool_names,
-            can_spawn=not is_leaf,
+            can_spawn=False,
         )
 
     @staticmethod
