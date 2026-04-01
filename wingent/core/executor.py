@@ -2,14 +2,15 @@
 Task executor — drives hierarchical agent execution.
 """
 
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, List, Callable, Tuple
 import asyncio
+import re
 import uuid
 
 from .task import Task, TaskStatus, TaskTree
 from .bulletin import BulletinBoard, BulletinPost, PostType
 from .tool import Tool, ToolRegistry
-from .agent import Agent, AgentConfig, AgentContext, AgentRole, CompanionAgent, CompanionConfig
+from .agent import Agent, AgentConfig, AgentContext, AgentRole, CompanionAgent, CompanionConfig, TaskPlan
 from .tools.meta import SpawnSubtaskTool, CompleteTaskTool, PostToBulletinTool, ReadBulletinTool
 from .prompts import get_manager_prompt, get_worker_prompt, get_companion_prompt
 
@@ -103,6 +104,23 @@ class TaskExecutor:
             agent_spawner=self._spawn_agent_for_subtask,
             agent=agent,
         )
+
+        # Let companions analyze the task (decomposer → planner)
+        plan = await agent.prepare_for_task(task)
+
+        if plan.approach == "decompose" and plan.steps:
+            for step in plan.steps:
+                try:
+                    await self._spawn_agent_for_subtask(
+                        parent_task=task,
+                        subtask_goal=step,
+                        subtask_criteria=f"Complete this step: {step}",
+                    )
+                except RuntimeError:
+                    break
+            if task.status == TaskStatus.DECOMPOSED:
+                await self._manager_loop(agent, task)
+                return
 
         turns = 0
         while not task.is_terminal() and turns < self.max_turns_per_agent:
@@ -289,13 +307,14 @@ class TaskExecutor:
         # Attach companion agents
         if self.companion_config:
             cc = self.companion_config
-            companion_provider = self.provider_factory(cc.provider, cc.model)
-            agent.add_companion(CompanionAgent(
-                purpose="evaluator",
-                system_prompt=get_companion_prompt("evaluator"),
-                provider=companion_provider,
-                config=cc,
-            ))
+            for purpose in ("evaluator", "decomposer", "planner"):
+                companion_provider = self.provider_factory(cc.provider, cc.model)
+                agent.add_companion(CompanionAgent(
+                    purpose=purpose,
+                    system_prompt=get_companion_prompt(purpose),
+                    provider=companion_provider,
+                    config=cc,
+                ))
 
         self.agents[config.id] = agent
         self._agent_count += 1
@@ -333,6 +352,50 @@ class TaskExecutor:
             tool_names=cfg.tool_names,
             can_spawn=not is_leaf,
         )
+
+    @staticmethod
+    def _parse_decision(decision_text: str) -> str:
+        """Parse decomposer output into 'direct' or 'decompose'.
+
+        Expected format:
+            DECISION: direct | decompose
+            Reason: ...
+        """
+        match = re.search(r'DECISION:\s*(direct|decompose)', decision_text, re.IGNORECASE)
+        if match:
+            return match.group(1).lower()
+        return "direct"
+
+    @staticmethod
+    def _parse_plan(plan_text: str) -> Tuple[str, List[str]]:
+        """Parse planner output into (approach, steps).
+
+        Expected format:
+            PLAN:
+            - step one
+            - step two
+        """
+        approach = "direct"
+        steps = []
+
+        # Legacy support: extract approach if present
+        match = re.search(r'APPROACH:\s*(direct|decompose)', plan_text, re.IGNORECASE)
+        if match:
+            approach = match.group(1).lower()
+
+        # Extract steps — lines starting with "- "
+        in_plan = False
+        for line in plan_text.splitlines():
+            stripped = line.strip()
+            if stripped.upper().startswith("PLAN:"):
+                in_plan = True
+                continue
+            if in_plan and stripped.startswith("- "):
+                step = stripped[2:].strip()
+                if step:
+                    steps.append(step)
+
+        return approach, steps
 
     async def wait_for_completion(self, task: Task, timeout: Optional[float] = None) -> Task:
         """Block until a task reaches terminal state."""

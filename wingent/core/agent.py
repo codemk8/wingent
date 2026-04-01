@@ -91,6 +91,13 @@ class TurnResult:
 
 
 @dataclass
+class TaskPlan:
+    """Result of the decomposer + planner companion phase."""
+    approach: str = "direct"       # "direct" or "decompose"
+    steps: List[str] = field(default_factory=list)
+
+
+@dataclass
 class CompanionConfig:
     """Configuration for a lightweight companion agent."""
     provider: str
@@ -305,6 +312,54 @@ class Agent:
         if companion is None:
             return None
         return await companion.run(prompt)
+
+    async def prepare_for_task(self, task) -> 'TaskPlan':
+        """Run decomposer and planner companions before the main turn loop.
+
+        Returns a TaskPlan with the approach ('direct' or 'decompose')
+        and concrete steps from the planner.
+        """
+        import re
+
+        goal_prompt = (
+            f"## Task Goal\n{task.goal}\n\n"
+            f"## Completion Criteria\n{task.completion_criteria}"
+        )
+
+        # Step 1: Ask decomposer (only if agent can spawn)
+        approach = "direct"
+        if self.config.can_spawn:
+            decision = await self.ask_companion("decomposer", goal_prompt)
+            if decision:
+                match = re.search(r'DECISION:\s*(direct|decompose)', decision, re.IGNORECASE)
+                if match:
+                    approach = match.group(1).lower()
+
+        # Step 2: Ask planner for concrete steps
+        plan_prompt = (
+            f"## Task Goal\n{task.goal}\n\n"
+            f"## Completion Criteria\n{task.completion_criteria}\n\n"
+            f"## Approach\n{approach}"
+        )
+        steps: List[str] = []
+        plan_text = await self.ask_companion("planner", plan_prompt)
+        if plan_text:
+            in_plan = False
+            for line in plan_text.splitlines():
+                stripped = line.strip()
+                if stripped.upper().startswith("PLAN:"):
+                    in_plan = True
+                    continue
+                if in_plan and stripped.startswith("- "):
+                    step = stripped[2:].strip()
+                    if step:
+                        steps.append(step)
+
+            # For direct approach, inject plan as context for the agent
+            if approach == "direct" and plan_text:
+                self.add_context_message(f"## Suggested Plan\n{plan_text}")
+
+        return TaskPlan(approach=approach, steps=steps)
 
     def add_context_message(self, content: str) -> None:
         """Add a user message to provide additional context."""

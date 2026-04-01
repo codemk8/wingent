@@ -22,9 +22,11 @@ cd frontend && npm install && npm run dev
 # Run both via Docker Compose (dev mode with hot-reload)
 docker-compose -f docker-compose.dev.yml up
 
-# Run tests (no test framework; scripts use assert + print)
-python test_core.py
-python test_task_execution.py
+# Run tests
+pytest tests/ -v
+
+# Run live evaluator tests (requires OPENROUTER_API_KEY)
+OPENROUTER_API_KEY=your-key pytest tests/test_evaluator_live.py -v
 ```
 
 ## Architecture

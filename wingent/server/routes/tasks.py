@@ -2,6 +2,7 @@
 Task execution endpoints.
 """
 
+import os
 import uuid
 from typing import Optional
 from fastapi import APIRouter, HTTPException
@@ -30,6 +31,13 @@ def _make_provider(provider_name: str, model: str):
         from ...providers.local import LocalProvider
         return LocalProvider()
     raise ValueError(f"Unknown provider: {provider_name}")
+
+
+def _pick_companion_provider(main_provider: str) -> str:
+    """Use OpenRouter for companions if API key is set, otherwise fall back to main provider."""
+    if os.environ.get("OPENROUTER_API_KEY"):
+        return "openrouter"
+    return main_provider
 
 
 def _default_companion_model(provider: str) -> str:
@@ -84,10 +92,11 @@ async def submit_task(req: TaskSubmitRequest):
     # Auto-generate completion criteria if not provided
     criteria = req.completion_criteria or "Complete the task thoroughly and report the result."
 
-    # Companion config — use a cheap model for evaluation
+    # Companion config — prefer OpenRouter for cheap evaluation when available
+    companion_provider = _pick_companion_provider(req.provider)
     companion_config = CompanionConfig(
-        provider=req.provider,
-        model=_default_companion_model(req.provider),
+        provider=companion_provider,
+        model=_default_companion_model(companion_provider),
         temperature=0.2,
         max_tokens=256,
     )
