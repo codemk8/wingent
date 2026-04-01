@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from ..state import app_state
 from ...core.agent import AgentConfig, CompanionConfig
-from ...core.executor import TaskExecutor
+from ...core.session import Session
 from ...core.prompts import get_manager_prompt
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
@@ -62,15 +62,17 @@ class TaskSubmitRequest(BaseModel):
 
 @router.post("")
 async def submit_task(req: TaskSubmitRequest):
-    """Submit a new root task for execution.
+    """Submit a new task for execution.
 
-    If no agent_config_id is provided, a default root agent is created
-    automatically — the framework decides what agents to spawn.
+    If a session already exists and is idle, the task is submitted to the
+    existing root agent (which retains context from prior tasks).
+    A new session is created when none exists or when the provider/model changes.
     """
-    if app_state.executor and any(
-        not t.is_terminal() for t in app_state.executor.task_tree.all_tasks()
+    # Check if there's already a task in progress
+    if app_state.session and any(
+        not t.is_terminal() for t in app_state.session.task_tree.all_tasks()
     ):
-        raise HTTPException(409, "An execution is already running. Stop it first.")
+        raise HTTPException(409, "A task is already running. Stop it first.")
 
     if req.working_directory:
         app_state.working_directory = req.working_directory
@@ -89,7 +91,6 @@ async def submit_task(req: TaskSubmitRequest):
             max_tokens=4096,
         )
 
-    # Auto-generate completion criteria if not provided
     criteria = req.completion_criteria or "Complete the task thoroughly and report the result."
 
     # Companion config — prefer OpenRouter for cheap evaluation when available
@@ -101,49 +102,50 @@ async def submit_task(req: TaskSubmitRequest):
         max_tokens=256,
     )
 
-    # Create executor
-    executor = TaskExecutor(
-        provider_factory=_make_provider,
-        default_agent_config=config,
-        max_depth=3,
-        max_agents=10,
-        max_turns_per_agent=20,
-        working_directory=req.working_directory,
-        companion_config=companion_config,
-    )
-    executor.add_callback(app_state.ws_manager.execution_callback)
-    app_state.executor = executor
+    # Create session if none exists (or config changed)
+    if not app_state.session:
+        session = Session(
+            provider_factory=_make_provider,
+            agent_config=config,
+            max_agents=10,
+            max_turns_per_agent=20,
+            working_directory=req.working_directory,
+            companion_config=companion_config,
+        )
+        session.add_callback(app_state.ws_manager.execution_callback)
+        app_state.session = session
 
-    task = await executor.submit(req.goal, criteria, config)
+    task = await app_state.session.submit(req.goal, criteria)
 
     return {
         "task_id": task.id,
         "status": task.status.value,
         "goal": task.goal,
+        "session_id": app_state.session.id,
     }
 
 
 @router.get("")
 async def list_tasks():
-    if not app_state.executor:
+    if not app_state.session:
         return []
-    return [_task_to_dict(t) for t in app_state.executor.task_tree.all_tasks()]
+    return [_task_to_dict(t) for t in app_state.session.task_tree.all_tasks()]
 
 
 @router.get("/stats")
 async def get_stats():
-    if not app_state.executor:
+    if not app_state.session:
         return {"total_tasks": 0, "completed": 0, "failed": 0,
                 "in_progress": 0, "decomposed": 0, "total_agents": 0,
                 "bulletin_boards": 0}
-    return app_state.executor.get_statistics()
+    return app_state.session.get_statistics()
 
 
 @router.get("/{task_id}")
 async def get_task(task_id: str):
-    if not app_state.executor:
-        raise HTTPException(404, "No execution running")
-    task = app_state.executor.task_tree.get_task(task_id)
+    if not app_state.session:
+        raise HTTPException(404, "No active session")
+    task = app_state.session.task_tree.get_task(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
     return _task_to_dict(task)
@@ -151,9 +153,18 @@ async def get_task(task_id: str):
 
 @router.post("/stop")
 async def stop_execution():
-    if not app_state.executor:
-        raise HTTPException(400, "No execution running")
-    await app_state.executor.shutdown()
+    if not app_state.session:
+        raise HTTPException(400, "No active session")
+    await app_state.session.shutdown()
+    return {"ok": True}
+
+
+@router.post("/reset")
+async def reset_session():
+    """End the current session and clear the root agent's history."""
+    if app_state.session:
+        await app_state.session.shutdown()
+    app_state.session = None
     return {"ok": True}
 
 

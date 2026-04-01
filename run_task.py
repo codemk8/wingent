@@ -16,7 +16,7 @@ import sys
 import time
 
 from wingent.core.agent import AgentConfig
-from wingent.core.executor import TaskExecutor
+from wingent.core.session import Session
 
 
 def make_provider(provider_name, model):
@@ -75,21 +75,20 @@ async def main():
         max_tokens=4096,
     )
 
-    executor = TaskExecutor(
+    session = Session(
         provider_factory=make_provider,
-        default_agent_config=config,
-        max_depth=2,
+        agent_config=config,
         max_agents=5,
         max_turns_per_agent=10,
     )
-    executor.add_callback(on_event)
+    session.add_callback(on_event)
 
     print(f"Goal: {goal}")
     print(f"Criteria: {criteria}")
     print("-" * 60)
 
-    task = await executor.submit(goal, criteria)
-    await executor.wait_for_completion(task, timeout=120)
+    task = await session.submit(goal, criteria)
+    await session.wait_for_completion(task, timeout=120)
 
     print("-" * 60)
     print(f"Status: {task.status.value}")
@@ -98,10 +97,10 @@ async def main():
     if task.error:
         print(f"\nError: {task.error}")
 
-    stats = executor.get_statistics()
+    stats = session.get_statistics()
     print(f"\nStats: {stats}")
 
-    await executor.shutdown()
+    await session.shutdown()
 
 
 if __name__ == "__main__":

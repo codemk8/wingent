@@ -9,6 +9,7 @@ from wingent.core.bulletin import BulletinBoard, BulletinPost, PostType
 from wingent.core.tool import Tool, ToolDefinition, ToolParameter, ToolRegistry
 from wingent.core.agent import AgentConfig, Agent, AgentContext, AgentRole, TurnResult, CompanionAgent, CompanionConfig
 from wingent.core.executor import TaskExecutor
+from wingent.core.session import Session
 from wingent.core.tools.meta import SpawnSubtaskTool, CompleteTaskTool, PostToBulletinTool, ReadBulletinTool
 from wingent.core.prompts import get_manager_prompt, get_worker_prompt, get_companion_prompt, reload as reload_prompts
 
@@ -214,23 +215,23 @@ def test_direct_completion():
             id="agent-1", name="Worker", provider="mock",
             model="mock-model", system_prompt="You solve tasks.",
         )
-        executor = TaskExecutor(
+        session = Session(
             provider_factory=factory,
-            default_agent_config=config,
+            agent_config=config,
         )
 
-        task = await executor.submit("What is 6*7?", "A number")
-        await executor.wait_for_completion(task, timeout=10)
+        task = await session.submit("What is 6*7?", "A number")
+        await session.wait_for_completion(task, timeout=10)
 
         assert task.status == TaskStatus.COMPLETED
         assert task.result == "The answer is 42"
-        assert executor._agent_count == 1
+        assert session._agent_count == 1
 
-        stats = executor.get_statistics()
+        stats = session.get_statistics()
         assert stats["completed"] == 1
         assert stats["total_agents"] == 1
 
-        await executor.shutdown()
+        await session.shutdown()
 
     asyncio.run(_test())
     print("  PASS: test_direct_completion")
@@ -276,27 +277,27 @@ def test_decomposition():
             id="root-agent", name="Coordinator", provider="mock",
             model="mock-model", system_prompt="You coordinate work.",
         )
-        executor = TaskExecutor(
+        session = Session(
             provider_factory=factory,
-            default_agent_config=config,
+            agent_config=config,
             max_turns_per_agent=10,
         )
 
-        task = await executor.submit(
+        task = await session.submit(
             "Write a research report",
             "A complete report with findings",
         )
-        await executor.wait_for_completion(task, timeout=30)
+        await session.wait_for_completion(task, timeout=30)
 
         assert task.status == TaskStatus.COMPLETED, f"Task status: {task.status}, error: {task.error}"
         assert len(task.subtask_ids) >= 1
-        assert executor._agent_count >= 2  # root + at least 1 worker
+        assert session._agent_count >= 2  # root + at least 1 worker
 
-        stats = executor.get_statistics()
+        stats = session.get_statistics()
         assert stats["total_tasks"] >= 2
         assert stats["bulletin_boards"] >= 1
 
-        await executor.shutdown()
+        await session.shutdown()
 
     asyncio.run(_test())
     print("  PASS: test_decomposition")
@@ -335,24 +336,24 @@ def test_subtask_agents_cannot_spawn():
             id="root", name="Root", provider="mock",
             model="mock", system_prompt="test",
         )
-        executor = TaskExecutor(
+        session = Session(
             provider_factory=factory,
-            default_agent_config=config,
+            agent_config=config,
             max_turns_per_agent=5,
         )
 
-        task = await executor.submit("Deep task", "criteria")
-        await executor.wait_for_completion(task, timeout=15)
+        task = await session.submit("Deep task", "criteria")
+        await session.wait_for_completion(task, timeout=15)
 
         assert task.status == TaskStatus.COMPLETED
 
         # All subtask agents should be workers with can_spawn=False
-        for agent in executor.agents.values():
+        for agent in session.agents.values():
             if agent.level > 0:
                 assert agent.role == AgentRole.WORKER
                 assert agent.config.can_spawn is False
 
-        await executor.shutdown()
+        await session.shutdown()
 
     asyncio.run(_test())
     print("  PASS: test_subtask_agents_cannot_spawn")
@@ -373,18 +374,18 @@ def test_max_turns_limit():
             id="root", name="Root", provider="mock",
             model="mock", system_prompt="test",
         )
-        executor = TaskExecutor(
+        session = Session(
             provider_factory=factory,
-            default_agent_config=config,
+            agent_config=config,
             max_turns_per_agent=3,
         )
 
-        task = await executor.submit("Impossible task", "criteria")
-        await executor.wait_for_completion(task, timeout=10)
+        task = await session.submit("Impossible task", "criteria")
+        await session.wait_for_completion(task, timeout=10)
 
         assert task.status == TaskStatus.FAILED
         assert "Max turns" in task.error
-        await executor.shutdown()
+        await session.shutdown()
 
     asyncio.run(_test())
     print("  PASS: test_max_turns_limit")
@@ -598,19 +599,19 @@ def test_evaluator_pass():
         )
 
         companion_config = CompanionConfig(provider="mock", model="companion-mock")
-        executor = TaskExecutor(
+        session = Session(
             provider_factory=factory,
-            default_agent_config=config,
+            agent_config=config,
             companion_config=companion_config,
         )
 
-        task = await executor.submit("What is 6*7?", "A number")
+        task = await session.submit("What is 6*7?", "A number")
 
         # Patch the evaluator provider on the created agent
-        agent = list(executor.agents.values())[0]
+        agent = list(session.agents.values())[0]
         agent.companions["evaluator"].provider = eval_provider
 
-        await executor.wait_for_completion(task, timeout=10)
+        await session.wait_for_completion(task, timeout=10)
 
         assert task.status == TaskStatus.COMPLETED
         assert task.result == "The answer is 42"
@@ -619,7 +620,7 @@ def test_evaluator_pass():
         assert len(eval_provider.call_log) == 1
         assert "6*7" in eval_provider.call_log[0]["messages"][0]["content"]
 
-        await executor.shutdown()
+        await session.shutdown()
 
     asyncio.run(_test())
     print("  PASS: test_evaluator_pass")
@@ -655,19 +656,19 @@ def test_evaluator_fail_then_pass():
         )
 
         companion_config = CompanionConfig(provider="mock", model="companion-mock")
-        executor = TaskExecutor(
+        session = Session(
             provider_factory=factory,
-            default_agent_config=config,
+            agent_config=config,
             companion_config=companion_config,
         )
 
-        task = await executor.submit("What is 6*7?", "A detailed answer")
+        task = await session.submit("What is 6*7?", "A detailed answer")
 
         # Patch evaluator
-        agent = list(executor.agents.values())[0]
+        agent = list(session.agents.values())[0]
         agent.companions["evaluator"].provider = eval_provider
 
-        await executor.wait_for_completion(task, timeout=10)
+        await session.wait_for_completion(task, timeout=10)
 
         assert task.status == TaskStatus.COMPLETED
         assert "6 multiplied by 7" in task.result
@@ -675,7 +676,7 @@ def test_evaluator_fail_then_pass():
         # Evaluator was called twice (fail then pass)
         assert len(eval_provider.call_log) == 2
 
-        await executor.shutdown()
+        await session.shutdown()
 
     asyncio.run(_test())
     print("  PASS: test_evaluator_fail_then_pass")
@@ -714,25 +715,25 @@ def test_all_subtask_agents_are_workers():
             id="root", name="Root", provider="mock",
             model="mock", system_prompt="Coordinate.",
         )
-        executor = TaskExecutor(
+        session = Session(
             provider_factory=factory,
-            default_agent_config=config,
+            agent_config=config,
             max_turns_per_agent=10,
         )
 
-        task = await executor.submit("Deep task", "criteria")
-        await executor.wait_for_completion(task, timeout=15)
+        task = await session.submit("Deep task", "criteria")
+        await session.wait_for_completion(task, timeout=15)
 
         assert task.status == TaskStatus.COMPLETED
 
         # All child agents should be workers
-        child_agents = [a for a in executor.agents.values() if a.level > 0]
+        child_agents = [a for a in session.agents.values() if a.level > 0]
         assert len(child_agents) >= 1
         for child in child_agents:
             assert child.role == AgentRole.WORKER
             assert child.config.can_spawn is False
 
-        await executor.shutdown()
+        await session.shutdown()
 
     asyncio.run(_test())
     print("  PASS: test_all_subtask_agents_are_workers")
@@ -777,24 +778,24 @@ def test_evaluator_rejects_incomplete_task():
             model="mock", system_prompt="You create plans.",
         )
         companion_config = CompanionConfig(provider="mock", model="companion-mock")
-        executor = TaskExecutor(
+        session = Session(
             provider_factory=factory,
-            default_agent_config=config,
+            agent_config=config,
             companion_config=companion_config,
             # Only 1 turn: agent cannot retry after the evaluator rejects
             max_turns_per_agent=1,
         )
 
-        task = await executor.submit(
+        task = await session.submit(
             "Create a 3-step project plan",
             "Must contain exactly 3 numbered steps",
         )
 
         # Patch evaluator onto the created agent
-        agent = list(executor.agents.values())[0]
+        agent = list(session.agents.values())[0]
         agent.companions["evaluator"].provider = eval_provider
 
-        await executor.wait_for_completion(task, timeout=10)
+        await session.wait_for_completion(task, timeout=10)
 
         # Task should NOT be completed — evaluator blocked it, then max turns hit
         assert task.status == TaskStatus.FAILED, (
@@ -822,14 +823,14 @@ def test_evaluator_rejects_incomplete_task():
                 rejection_found = True
         assert rejection_found, "Agent should have received evaluator rejection feedback"
 
-        await executor.shutdown()
+        await session.shutdown()
 
     asyncio.run(_test())
     print("  PASS: test_evaluator_rejects_incomplete_task")
 
 
 def test_companion_config_wiring():
-    """Test that executor creates evaluator companions on all agents."""
+    """Test that session creates evaluator companions on all agents."""
     async def _test():
         main_provider = MockProvider(responses=[
             make_tool_call("complete_task", {"result": "Done"}),
@@ -863,17 +864,17 @@ def test_companion_config_wiring():
             provider="mock", model="cheap-model",
             temperature=0.2, max_tokens=256,
         )
-        executor = TaskExecutor(
+        session = Session(
             provider_factory=factory,
-            default_agent_config=config,
+            agent_config=config,
             companion_config=companion_config,
         )
 
-        task = await executor.submit("Test task", "criteria")
-        await executor.wait_for_completion(task, timeout=10)
+        task = await session.submit("Test task", "criteria")
+        await session.wait_for_completion(task, timeout=10)
 
         # Agent should have an evaluator companion
-        agent = list(executor.agents.values())[0]
+        agent = list(session.agents.values())[0]
         assert "evaluator" in agent.companions
         assert agent.companions["evaluator"].purpose == "evaluator"
 
@@ -881,7 +882,7 @@ def test_companion_config_wiring():
         assert task.status == TaskStatus.COMPLETED
         assert len(pass_provider.call_log) >= 1
 
-        await executor.shutdown()
+        await session.shutdown()
 
     asyncio.run(_test())
     print("  PASS: test_companion_config_wiring")
@@ -921,6 +922,54 @@ def test_parse_plan():
     assert steps == []
 
     print("  PASS: test_parse_plan")
+
+
+# ── Integration Tests: Session Persistence ─────────────────────────────
+
+def test_session_persists_root_agent():
+    """Test that the root agent is reused across multiple task submissions."""
+    async def _test():
+        call_count = 0
+
+        class PersistentProvider:
+            async def generate(self, messages, system, temperature, max_tokens,
+                               tools=None, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                return make_tool_call("complete_task", {
+                    "result": f"Result {call_count}"
+                })
+
+        def factory(pn, m):
+            return PersistentProvider()
+
+        config = AgentConfig(
+            id="root", name="Root", provider="mock",
+            model="mock", system_prompt="Solve tasks.",
+        )
+        session = Session(provider_factory=factory, agent_config=config)
+
+        # Submit first task
+        task1 = await session.submit("Task one", "Do task one")
+        await session.wait_for_completion(task1, timeout=10)
+        assert task1.status == TaskStatus.COMPLETED
+
+        # Submit second task — same root agent
+        task2 = await session.submit("Task two", "Do task two")
+        await session.wait_for_completion(task2, timeout=10)
+        assert task2.status == TaskStatus.COMPLETED
+
+        # Only one root agent was created
+        assert session._agent_count == 1
+        # Root agent has history from both tasks
+        assert len(session.root_agent.message_history) > 2
+        # Both tasks tracked
+        assert len(session.tasks) == 2
+
+        await session.shutdown()
+
+    asyncio.run(_test())
+    print("  PASS: test_session_persists_root_agent")
 
 
 # ── Integration Tests: Planner Auto-Decomposition ────────────────────────
@@ -1001,28 +1050,28 @@ def test_planner_auto_decompose():
             model="mock", system_prompt="Coordinate.",
         )
         companion_config = CompanionConfig(provider="mock", model="companion-mock")
-        executor = TaskExecutor(
+        session = Session(
             provider_factory=factory,
-            default_agent_config=config,
+            agent_config=config,
             companion_config=companion_config,
             max_turns_per_agent=10,
         )
 
-        task = await executor.submit(
+        task = await session.submit(
             "Analyze the market",
             "A complete market analysis report",
         )
-        await executor.wait_for_completion(task, timeout=30)
+        await session.wait_for_completion(task, timeout=30)
 
         assert task.status == TaskStatus.COMPLETED, f"Got {task.status}: {task.error}"
         # Root task should have been decomposed into 2 subtasks
         assert len(task.subtask_ids) == 2
         # All subtasks should be completed
         for sid in task.subtask_ids:
-            st = executor.task_tree.get_task(sid)
+            st = session.task_tree.get_task(sid)
             assert st.status == TaskStatus.COMPLETED
 
-        await executor.shutdown()
+        await session.shutdown()
 
     asyncio.run(_test())
     print("  PASS: test_planner_auto_decompose")
@@ -1060,16 +1109,16 @@ def test_planner_direct_no_decompose():
             model="mock", system_prompt="Solve.",
         )
         companion_config = CompanionConfig(provider="mock", model="companion-mock")
-        executor = TaskExecutor(
+        session = Session(
             provider_factory=factory,
-            default_agent_config=config,
+            agent_config=config,
             companion_config=companion_config,
         )
 
-        task = await executor.submit("What is 6*7?", "A number")
-        await executor.wait_for_completion(task, timeout=10)
+        task = await session.submit("What is 6*7?", "A number")
+        await session.wait_for_completion(task, timeout=10)
 
-        agent = list(executor.agents.values())[0]
+        agent = list(session.agents.values())[0]
 
         assert task.status == TaskStatus.COMPLETED
         assert task.result == "42"
@@ -1082,7 +1131,7 @@ def test_planner_direct_no_decompose():
         )
         assert plan_injected, "Direct plan should be injected as context"
 
-        await executor.shutdown()
+        await session.shutdown()
 
     asyncio.run(_test())
     print("  PASS: test_planner_direct_no_decompose")
@@ -1116,6 +1165,7 @@ if __name__ == "__main__":
     test_evaluator_rejects_incomplete_task()
     test_all_subtask_agents_are_workers()
     test_companion_config_wiring()
+    test_session_persists_root_agent()
     test_planner_auto_decompose()
     test_planner_direct_no_decompose()
 

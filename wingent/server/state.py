@@ -6,7 +6,7 @@ from typing import Dict, Optional
 import uuid
 
 from ..core.agent import AgentConfig
-from ..core.executor import TaskExecutor
+from ..core.session import Session
 from .ws import WebSocketManager
 
 # Agent type templates (ported from wingent/ui/explorer.py)
@@ -152,7 +152,7 @@ class AppState:
 
     def __init__(self):
         self.agent_configs: Dict[str, AgentConfig] = {}
-        self.executor: Optional[TaskExecutor] = None
+        self.session: Optional[Session] = None
         self.ws_manager = WebSocketManager()
         self.working_directory: Optional[str] = None
 
