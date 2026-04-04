@@ -111,3 +111,11 @@ async def apply_topology(name: str):
 @router.get("/providers")
 async def list_providers():
     return PROVIDER_MODELS
+
+
+@router.post("/providers/openrouter/refresh")
+async def refresh_openrouter_models():
+    """Fetch the latest model list from the OpenRouter API."""
+    from ...config.models import refresh_openrouter
+    models = refresh_openrouter()
+    return {"count": len(models), "models": models}

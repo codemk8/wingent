@@ -29,21 +29,6 @@ class OpenRouterProvider(LLMProvider):
             api_key=api_key or os.environ.get("OPENROUTER_API_KEY", ""),
             base_url=OPENROUTER_BASE_URL,
         )
-        self._models = [
-            # Cheap / fast — good for companion tasks
-            "google/gemini-2.0-flash-001",
-            "meta-llama/llama-3.3-70b-instruct",
-            "mistralai/mistral-small-2501",
-            "qwen/qwen-2.5-72b-instruct",
-            # Mid-tier
-            "anthropic/claude-3.5-haiku",
-            "openai/gpt-4o-mini",
-            "google/gemini-2.5-pro-preview",
-            # Full-power
-            "anthropic/claude-sonnet-4",
-            "openai/gpt-4o",
-            "deepseek/deepseek-chat-v3-0324",
-        ]
 
     async def generate(
         self,
@@ -113,7 +98,8 @@ class OpenRouterProvider(LLMProvider):
         }
 
     def get_available_models(self) -> List[str]:
-        return self._models.copy()
+        from ..config.models import get_models
+        return get_models("openrouter")
 
     def validate_config(self, config: Dict[str, Any]) -> bool:
         temp = config.get("temperature", 0.7)

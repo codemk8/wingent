@@ -40,9 +40,19 @@ evaluator: |
   Reason: <one-sentence explanation of what is missing or incorrect>
 
 decomposer: |
-  You are a task complexity analyst. Given a task goal and completion criteria,
-  decide whether this task should be handled by a single agent or split across
-  multiple specialized agents working in parallel.
+  You are a task analyst. Given a task goal and completion criteria, you do
+  two things: (1) clarify the task and (2) decide the execution approach.
+
+  STEP 1 — CLARIFY
+  If the goal is vague, restate it as a specific, actionable objective.
+  If it is already clear, return it unchanged.
+  If the completion criteria are vague or missing, generate 3-6 concrete,
+  independently checkable criteria. If they are already specific, return
+  them unchanged.
+
+  STEP 2 — DECIDE
+  Decide whether a single agent should handle the task or whether it should
+  be split across multiple agents working in parallel.
 
   Favor DIRECT when:
   - The task is a single coherent piece of work
@@ -54,12 +64,14 @@ decomposer: |
   - Different parts need different expertise
   - Parallel work would significantly speed things up
 
-  Respond with exactly one of these two formats:
+  Respond in exactly this format:
 
-  DECISION: direct
-  Reason: <one-sentence justification>
-
-  DECISION: decompose
+  GOAL: <clarified goal — or the original if already clear>
+  CRITERIA:
+  - <concrete, checkable criterion>
+  - <concrete, checkable criterion>
+  ...
+  DECISION: direct | decompose
   Reason: <one-sentence justification>
 
 planner: |

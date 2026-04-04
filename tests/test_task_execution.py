@@ -575,7 +575,7 @@ def test_evaluator_pass():
         class CompanionProvider:
             async def generate(self, messages, system, temperature, max_tokens,
                                tools=None, **kwargs):
-                if "complexity analyst" in system:
+                if "task analyst" in system:
                     return make_text_response("DECISION: direct\nReason: Simple math")
                 if "planning specialist" in system:
                     return make_text_response("PLAN:\n- Compute 6*7")
@@ -924,6 +924,122 @@ def test_parse_plan():
     print("  PASS: test_parse_plan")
 
 
+# ── Integration Tests: Decomposer Refinement ──────────────────────────
+
+def test_decomposer_refines_vague_task():
+    """Test that the decomposer clarifies a vague goal and generates concrete criteria."""
+    async def _test():
+        class CompanionProvider:
+            async def generate(self, messages, system, temperature, max_tokens,
+                               tools=None, **kwargs):
+                # Decomposer: refine + decide
+                if "task analyst" in system:
+                    return make_text_response(
+                        "GOAL: Refactor the utils module to reduce cyclomatic complexity\n"
+                        "CRITERIA:\n"
+                        "- No function exceeds 10 lines\n"
+                        "- All edge cases have error handling\n"
+                        "- Existing tests still pass\n"
+                        "DECISION: direct\n"
+                        "Reason: Single module refactor"
+                    )
+                # Planner
+                if "planning specialist" in system:
+                    return make_text_response("PLAN:\n- Refactor the code")
+                # Evaluator
+                return make_text_response("PASS")
+
+        main_provider = MockProvider(responses=[
+            make_tool_call("complete_task", {"result": "Refactored code"}),
+            make_text_response("Done."),
+        ])
+
+        def factory(pn, m):
+            if m == "companion-mock":
+                return CompanionProvider()
+            return main_provider
+
+        config = AgentConfig(
+            id="agent-1", name="Coder", provider="mock",
+            model="mock", system_prompt="Improve code.",
+        )
+        companion_config = CompanionConfig(provider="mock", model="companion-mock")
+        session = Session(
+            provider_factory=factory,
+            agent_config=config,
+            companion_config=companion_config,
+        )
+
+        task = await session.submit("Improve this code", "Make it better")
+        await session.wait_for_completion(task, timeout=10)
+
+        assert task.status == TaskStatus.COMPLETED
+        # Goal should have been clarified
+        assert "cyclomatic complexity" in task.goal
+        # Criteria should be concrete
+        assert "10 lines" in task.completion_criteria
+        assert "edge cases" in task.completion_criteria
+        assert "tests still pass" in task.completion_criteria
+
+        await session.shutdown()
+
+    asyncio.run(_test())
+    print("  PASS: test_decomposer_refines_vague_task")
+
+
+def test_decomposer_preserves_clear_task():
+    """Test that the decomposer returns task unchanged when already specific."""
+    async def _test():
+        class CompanionProvider:
+            async def generate(self, messages, system, temperature, max_tokens,
+                               tools=None, **kwargs):
+                if "task analyst" in system:
+                    return make_text_response(
+                        "GOAL: Calculate 6 * 7\n"
+                        "CRITERIA:\n"
+                        "- Return the correct numerical answer\n"
+                        "DECISION: direct\n"
+                        "Reason: Simple computation"
+                    )
+                if "planning specialist" in system:
+                    return make_text_response("PLAN:\n- Compute 6*7")
+                return make_text_response("PASS")
+
+        main_provider = MockProvider(responses=[
+            make_tool_call("complete_task", {"result": "42"}),
+            make_text_response("Done."),
+        ])
+
+        def factory(pn, m):
+            if m == "companion-mock":
+                return CompanionProvider()
+            return main_provider
+
+        config = AgentConfig(
+            id="agent-1", name="Worker", provider="mock",
+            model="mock", system_prompt="Solve.",
+        )
+        companion_config = CompanionConfig(provider="mock", model="companion-mock")
+        session = Session(
+            provider_factory=factory,
+            agent_config=config,
+            companion_config=companion_config,
+        )
+
+        task = await session.submit("Calculate 6 * 7", "Return the correct numerical answer")
+        await session.wait_for_completion(task, timeout=10)
+
+        assert task.status == TaskStatus.COMPLETED
+        # Goal should be essentially unchanged
+        assert "6 * 7" in task.goal
+        assert "correct numerical answer" in task.completion_criteria
+
+        await session.shutdown()
+
+    asyncio.run(_test())
+    print("  PASS: test_decomposer_preserves_clear_task")
+
+
 # ── Integration Tests: Session Persistence ─────────────────────────────
 
 def test_session_persists_root_agent():
@@ -1014,7 +1130,7 @@ def test_planner_auto_decompose():
                     return make_text_response("PASS")
 
                 # Decomposer calls contain goal but no "Approach" section
-                if "complexity analyst" in system:
+                if "task analyst" in system:
                     if "Analyze the market" in prompt:
                         return make_text_response(
                             "DECISION: decompose\n"
@@ -1083,7 +1199,7 @@ def test_planner_direct_no_decompose():
         class CompanionProvider:
             async def generate(self, messages, system, temperature, max_tokens,
                                tools=None, **kwargs):
-                if "complexity analyst" in system:
+                if "task analyst" in system:
                     return make_text_response(
                         "DECISION: direct\nReason: Simple computation"
                     )
@@ -1165,6 +1281,8 @@ if __name__ == "__main__":
     test_evaluator_rejects_incomplete_task()
     test_all_subtask_agents_are_workers()
     test_companion_config_wiring()
+    test_decomposer_refines_vague_task()
+    test_decomposer_preserves_clear_task()
     test_session_persists_root_agent()
     test_planner_auto_decompose()
     test_planner_direct_no_decompose()

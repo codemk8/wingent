@@ -314,26 +314,29 @@ class Agent:
         return await companion.run(prompt)
 
     async def prepare_for_task(self, task) -> 'TaskPlan':
-        """Run decomposer and planner companions before the main turn loop.
+        """Run decomposer → planner companions before the main turn loop.
 
-        Returns a TaskPlan with the approach ('direct' or 'decompose')
-        and concrete steps from the planner.
+        The decomposer clarifies vague goals/criteria and decides the approach.
+        The planner produces concrete steps.
+        Returns a TaskPlan with the approach and steps.
         """
         import re
 
         goal_prompt = (
             f"## Task Goal\n{task.goal}\n\n"
-            f"## Completion Criteria\n{task.completion_criteria}"
+            f"## Completion Criteria\n{task.completion_criteria or '(none provided)'}"
         )
 
-        # Step 1: Ask decomposer (only if agent can spawn)
+        # Step 1: Ask decomposer to clarify task and decide approach
         approach = "direct"
         if self.config.can_spawn:
-            decision = await self.ask_companion("decomposer", goal_prompt)
-            if decision:
-                match = re.search(r'DECISION:\s*(direct|decompose)', decision, re.IGNORECASE)
-                if match:
-                    approach = match.group(1).lower()
+            response = await self.ask_companion("decomposer", goal_prompt)
+            if response:
+                approach, goal, criteria = self._parse_decomposer(response)
+                if goal:
+                    task.goal = goal
+                if criteria:
+                    task.completion_criteria = criteria
 
         # Step 2: Ask planner for concrete steps
         plan_prompt = (
@@ -355,11 +358,56 @@ class Agent:
                     if step:
                         steps.append(step)
 
-            # For direct approach, inject plan as context for the agent
             if approach == "direct" and plan_text:
                 self.add_context_message(f"## Suggested Plan\n{plan_text}")
 
         return TaskPlan(approach=approach, steps=steps)
+
+    @staticmethod
+    def _parse_decomposer(text: str) -> tuple:
+        """Parse decomposer output into (approach, goal, criteria).
+
+        Expected format:
+            GOAL: <clarified goal>
+            CRITERIA:
+            - item one
+            - item two
+            DECISION: direct | decompose
+            Reason: ...
+        """
+        import re
+
+        # Extract decision
+        approach = "direct"
+        match = re.search(r'DECISION:\s*(direct|decompose)', text, re.IGNORECASE)
+        if match:
+            approach = match.group(1).lower()
+
+        # Extract refined goal
+        goal = None
+        goal_match = re.search(r'GOAL:\s*(.+)', text)
+        if goal_match:
+            goal = goal_match.group(1).strip()
+
+        # Extract criteria bullet list
+        criteria = None
+        items = []
+        in_criteria = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.upper().startswith("CRITERIA:"):
+                in_criteria = True
+                continue
+            if in_criteria and stripped.startswith("- "):
+                item = stripped[2:].strip()
+                if item:
+                    items.append(item)
+            elif in_criteria and stripped.upper().startswith("DECISION:"):
+                break
+        if items:
+            criteria = "; ".join(items)
+
+        return approach, goal, criteria
 
     def add_context_message(self, content: str) -> None:
         """Add a user message to provide additional context."""

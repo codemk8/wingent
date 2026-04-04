@@ -7,6 +7,7 @@ import uuid
 
 from ..core.agent import AgentConfig
 from ..core.session import Session
+from ..config.models import get_provider_models
 from .ws import WebSocketManager
 
 # Agent type templates (ported from wingent/ui/explorer.py)
@@ -113,38 +114,7 @@ TOPOLOGY_TEMPLATES = {
     },
 }
 
-# Provider → model mapping
-PROVIDER_MODELS = {
-    "anthropic": [
-        "claude-opus-4-5-20251101",
-        "claude-sonnet-4-5-20250929",
-        "claude-3-5-sonnet-20241022",
-        "claude-3-5-haiku-20241022",
-    ],
-    "openai": [
-        "gpt-4-turbo",
-        "gpt-4",
-        "gpt-3.5-turbo",
-    ],
-    "openrouter": [
-        "google/gemini-2.0-flash-001",
-        "meta-llama/llama-3.3-70b-instruct",
-        "mistralai/mistral-small-2501",
-        "qwen/qwen-2.5-72b-instruct",
-        "anthropic/claude-3.5-haiku",
-        "openai/gpt-4o-mini",
-        "google/gemini-2.5-pro-preview",
-        "anthropic/claude-sonnet-4",
-        "openai/gpt-4o",
-        "deepseek/deepseek-chat-v3-0324",
-    ],
-    "local": [
-        "llama3",
-        "mistral",
-        "codellama",
-        "phi3",
-    ],
-}
+PROVIDER_MODELS = get_provider_models()
 
 
 class AppState:
