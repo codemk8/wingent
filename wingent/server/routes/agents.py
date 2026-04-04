@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 class AgentConfigRequest(BaseModel):
     name: str
     provider: str = "anthropic"
-    model: str = "claude-sonnet-4-5-20250929"
+    model: str = "claude-sonnet-4-6-20260401"
     system_prompt: str = ""
     temperature: float = 0.7
     max_tokens: int = 4096

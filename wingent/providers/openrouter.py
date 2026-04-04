@@ -39,7 +39,7 @@ class OpenRouterProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs
     ) -> Dict[str, Any]:
-        model = kwargs.get("model", "google/gemini-2.0-flash-001")
+        model = kwargs.get("model", "google/gemini-3-flash-preview")
 
         # Prepend system message (OpenAI-compatible format)
         all_messages = [{"role": "system", "content": system}] + messages

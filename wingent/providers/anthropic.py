@@ -19,15 +19,8 @@ class AnthropicProvider(LLMProvider):
             )
 
         self.client = anthropic.Anthropic(api_key=api_key)
-        self._models = [
-            "claude-opus-4-5-20251101",
-            "claude-sonnet-4-5-20250929",
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20241022",
-            "claude-3-opus-20240229",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307"
-        ]
+        from ..config.models import get_models
+        self._models = get_models("anthropic")
 
     async def generate(
         self,
@@ -38,7 +31,7 @@ class AnthropicProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs
     ) -> Dict[str, Any]:
-        model = kwargs.get("model", "claude-sonnet-4-5-20250929")
+        model = kwargs.get("model", "claude-sonnet-4-6-20260401")
 
         api_kwargs = dict(
             model=model,

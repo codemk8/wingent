@@ -64,7 +64,7 @@ async def main():
         id="root",
         name="Root Agent",
         provider="anthropic",
-        model="claude-sonnet-4-5-20250929",
+        model="claude-sonnet-4-6-20260401",
         system_prompt=(
             "You are a capable agent. For simple tasks, solve them directly "
             "and call complete_task with your answer. For complex tasks that "

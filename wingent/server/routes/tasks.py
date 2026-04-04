@@ -43,9 +43,9 @@ def _pick_companion_provider(main_provider: str) -> str:
 def _default_companion_model(provider: str) -> str:
     """Pick a cheap/fast model for companion agents based on provider."""
     defaults = {
-        "anthropic": "claude-haiku-4-5-20251001",
+        "anthropic": "claude-haiku-4-5-20251001",  # cheapest Anthropic option
         "openai": "gpt-4o-mini",
-        "openrouter": "google/gemini-2.0-flash-001",
+        "openrouter": "google/gemini-2.5-flash",
         "local": "llama3",
     }
     return defaults.get(provider, "claude-haiku-4-5-20251001")
@@ -57,7 +57,7 @@ class TaskSubmitRequest(BaseModel):
     agent_config_id: Optional[str] = None
     working_directory: Optional[str] = None
     provider: str = "anthropic"
-    model: str = "claude-sonnet-4-5-20250929"
+    model: str = "claude-sonnet-4-6-20260401"
 
 
 @router.post("")

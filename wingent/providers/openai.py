@@ -19,17 +19,8 @@ class OpenAIProvider(LLMProvider):
             )
 
         self.client = openai.OpenAI(api_key=api_key)
-        self._models = [
-            "gpt-4-turbo",
-            "gpt-4-turbo-2024-04-09",
-            "gpt-4-turbo-preview",
-            "gpt-4-0125-preview",
-            "gpt-4",
-            "gpt-4-0613",
-            "gpt-3.5-turbo",
-            "gpt-3.5-turbo-0125",
-            "gpt-3.5-turbo-1106"
-        ]
+        from ..config.models import get_models
+        self._models = get_models("openai")
 
     async def generate(
         self,
@@ -40,7 +31,7 @@ class OpenAIProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs
     ) -> Dict[str, Any]:
-        model = kwargs.get("model", "gpt-4-turbo")
+        model = kwargs.get("model", "gpt-4.1")
 
         # Prepend system message
         all_messages = [{"role": "system", "content": system}] + messages
